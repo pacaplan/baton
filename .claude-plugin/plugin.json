@@ -1,0 +1,6 @@
+{
+  "name": "baton",
+  "version": "0.1.0",
+  "description": "CLI workflow orchestrator for AI agents. Provides /continue to signal step completion.",
+  "license": "MIT"
+}
