@@ -1,0 +1,28 @@
+{
+  "name": "baton",
+  "version": "0.1.0",
+  "description": "CLI workflow orchestrator for AI agents",
+  "license": "MIT",
+  "author": "Paul Caplan",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "bun build --compile --minify --sourcemap ./src/index.ts --outfile bin/baton",
+    "test": "bun test",
+    "lint": "biome check src",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.3",
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "yaml": "^2.8.2",
+    "zod": "^4.3.5"
+  }
+}

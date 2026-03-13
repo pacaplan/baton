@@ -1,0 +1,67 @@
+name: flokay
+description: "Full flokay change lifecycle"
+agent: claude-code
+
+params:
+  - name: change_name
+    required: true
+  - name: description
+    required: true
+
+steps:
+  - id: create
+    mode: shell
+    command: openspec new change "{{change_name}}"
+
+  - id: propose
+    mode: interactive
+    session: new
+    prompt: |
+      Run /flokay:propose for a change called "{{change_name}}":
+      {{description}}
+
+  - id: specs
+    mode: interactive
+    session: resume
+    prompt: |
+      Run /flokay:spec for change "{{change_name}}".
+      Read openspec/changes/{{change_name}}/proposal.md for context.
+
+  - id: design
+    mode: interactive
+    session: new
+    prompt: |
+      Run /flokay:design for change "{{change_name}}".
+      Read the proposal and all specs in openspec/changes/{{change_name}}/.
+
+  - id: tasks
+    mode: headless
+    session: new
+    prompt: |
+      Run /flokay:plan-tasks for change "{{change_name}}".
+      Read the design at openspec/changes/{{change_name}}/design.md.
+
+  - id: review
+    mode: headless
+    session: resume
+    prompt: |
+      Run /gauntlet-run to review change "{{change_name}}".
+      Write review.md summarizing the results.
+
+  - id: implement
+    mode: interactive
+    session: new
+    prompt: |
+      Run /opsx:apply on "{{change_name}}"
+
+  - id: verify
+    mode: headless
+    session: resume
+    prompt: |
+      Run /gauntlet-run to verify the implementation.
+
+  - id: finalize
+    mode: headless
+    session: new
+    prompt: |
+      Run /flokay:finalize-pr for "{{change_name}}"

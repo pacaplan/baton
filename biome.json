@@ -1,0 +1,68 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.3/schema.json",
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "complexity": {
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": { "maxAllowedComplexity": 15 }
+        },
+        "noExcessiveLinesPerFunction": {
+          "level": "error",
+          "options": { "maxLines": 75 }
+        },
+        "noExcessiveNestedTestSuites": "error",
+        "noForEach": "error",
+        "useSimplifiedLogicExpression": "error"
+      },
+      "style": {
+        "noNestedTernary": "error",
+        "noUselessElse": "error",
+        "useCollapsedElseIf": "error",
+        "noParameterAssign": "error",
+        "noNegationElse": "error",
+        "noYodaExpression": "error",
+        "useExplicitLengthCheck": "error",
+        "noShoutyConstants": "error"
+      },
+      "suspicious": {
+        "noImportCycles": "error"
+      },
+      "nursery": {
+        "noExcessiveLinesPerFile": {
+          "level": "error",
+          "options": { "maxLines": 500 }
+        },
+        "noExcessiveClassesPerFile": {
+          "level": "error",
+          "options": { "maxClasses": 1 }
+        },
+        "noNestedPromises": "error",
+        "noUselessReturn": "error"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "javascript": {
+    "formatter": {
+      "semicolons": "always",
+      "quoteStyle": "single"
+    }
+  },
+  "files": {
+    "includes": [
+      "**/src/**/*.ts",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/out",
+      "!**/bin"
+    ]
+  }
+}
