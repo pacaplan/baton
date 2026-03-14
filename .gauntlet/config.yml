@@ -24,7 +24,6 @@ entry_points:
       - security-deps
     reviews:
       - code-quality
-      - task-compliance
   - path: "openspec/changes"
     exclude:
       - "openspec/changes/archive"

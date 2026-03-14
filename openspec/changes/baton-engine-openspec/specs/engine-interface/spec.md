@@ -34,7 +34,7 @@ After loading the engine and the workflow, baton SHALL call the engine's `valida
 
 ### Requirement: State file persistence
 
-Baton SHALL persist workflow state to a JSON file after each step. The engine's `getStateDir(params)` (if implemented) determines the directory; otherwise baton defaults to the project root. The state file SHALL contain: `workflowFile`, `workflowName`, `currentStep` (step ID), `sessionIds`, and `params`.
+Baton SHALL persist workflow state to a JSON file after each step. The engine's `getStateDir(params)` (if implemented) determines the directory; otherwise baton defaults to the project root. The state file SHALL contain: `workflowFile`, `workflowName`, `currentStep` (step ID), `sessionIds`, `params`, and `workflowHash`.
 
 #### Scenario: State file written after each step
 - **WHEN** a step completes (success or abort)
@@ -54,10 +54,10 @@ Baton SHALL persist workflow state to a JSON file after each step. The engine's 
 
 ### Requirement: Workflow resumption
 
-`baton --resume <state-file-path>` SHALL load the state file, re-load the workflow from the persisted `workflowFile`, and resume from `currentStep`. If the workflow file has changed since the state was written, baton SHALL warn but proceed. `--from` on a normal `baton run` SHALL override the state file if one exists.
+`baton resume <state-file-path>` SHALL load the state file, re-load the workflow from the persisted `workflowFile`, and resume from `currentStep`. If the workflow file has changed since the state was written, baton SHALL warn but proceed. `--from` on a normal `baton run` SHALL override the state file if one exists.
 
 #### Scenario: Resume from state file
-- **WHEN** the user runs `baton --resume path/to/baton-state.json`
+- **WHEN** the user runs `baton resume path/to/baton-state.json`
 - **THEN** baton loads the state, re-loads the workflow, and resumes from `currentStep` with the persisted `sessionIds` and `params`
 
 #### Scenario: Workflow changed since state was written

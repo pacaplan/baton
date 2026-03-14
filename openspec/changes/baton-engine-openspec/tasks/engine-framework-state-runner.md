@@ -6,20 +6,9 @@ Add the engine abstraction to baton: the engine interface, hardcoded registry, s
 
 ## Background
 
-After Task 1, baton has commander-based CLI in `src/commands/` and tests. This task adds the engine layer.
+Baton has a commander-based CLI with commands in `src/commands/` (`run.ts`, `validate.ts`) and unit tests in `test/`. This task adds the engine layer.
 
-**Engine interface** — A plain object with all-optional methods. The runner calls these hooks at specific points in the step loop. Define the interface and a `createEngine` function with a hardcoded registry map in `src/engine.ts`. For now the registry is empty (no concrete engines yet) — but the infrastructure is in place.
-
-```typescript
-interface Engine {
-  getStateDir?(params: Record<string, string>): string;
-  validateWorkflow?(workflow: Workflow): void;  // throws on failure
-  enrichPrompt?(stepId: string, params: Record<string, string>): Promise<string | undefined>;
-  validateStep?(stepId: string, params: Record<string, string>): Promise<boolean>;
-}
-```
-
-`enrichPrompt` returns `undefined` for step IDs it doesn't manage. `validateStep` returns `true` for step IDs it doesn't manage.
+**Engine interface** — A plain object with all-optional methods: `getStateDir(params)` returns a directory path for the state file, `validateWorkflow(workflow)` throws on incompatibility, `enrichPrompt(stepId, params)` returns a string to prepend to the prompt (or `undefined` for step IDs it doesn't manage), and `validateStep(stepId, params)` returns `true` if the step produced its expected output (or `true` for step IDs it doesn't manage). All methods are optional. Define the interface and a `createEngine` function with a hardcoded registry map in `src/engine.ts`. For now the registry is empty (no concrete engines yet) — but the infrastructure is in place.
 
 **Engine registry** — A simple `Record<string, ConstructorType>` map in `src/engine.ts`. `createEngine` extracts `type` from the engine config block, looks up the constructor, passes the remaining config fields. Throws if type is unrecognized.
 

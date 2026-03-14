@@ -14,22 +14,13 @@ Baton currently has 4 source files with no tests:
 
 The project uses Bun as its runtime and test runner (`bun test`). Tests go in `test/` (excluded from tsconfig compilation). Dependencies: `zod`, `yaml`. Dev: `@biomejs/biome`, `@types/bun`.
 
-**What to do:**
+Add `commander` as a dependency. Create `src/commands/run.ts` (registers `baton run <workflow> [params...]` with `--from <step>` option), `src/commands/validate.ts` (registers `baton validate <workflow>`), and `src/commands/index.ts` (re-exports register functions). Rewrite `src/index.ts` to create a Commander program, register commands, and parse `process.argv` — replacing the hand-rolled `parseArgs` and `main` function.
 
-1. Add `commander` as a dependency.
-2. Create `src/commands/run.ts` — registers the `baton run <workflow> [params...]` command with `--from <step>` option. Extracts the workflow loading, param mapping, and `runWorkflow` call currently in `index.ts`.
-3. Create `src/commands/validate.ts` — registers the `baton validate <workflow>` command. Extracts the validation logic currently in `index.ts`.
-4. Create `src/commands/index.ts` — re-exports `registerRunCommand` and `registerValidateCommand`.
-5. Rewrite `src/index.ts` — create a Commander program, register commands, parse `process.argv`. The `main` function and hand-rolled `parseArgs` are replaced entirely.
-6. Add unit tests for all existing code:
-   - `test/schema.test.ts` — Zod schema validation (valid workflows parse, invalid ones reject, defaults apply)
-   - `test/loader.test.ts` — `loadWorkflow` with fixture YAML files, `interpolateParams` with valid/missing params
-   - `test/runner.test.ts` — runner behavior with mocked process spawning (shell steps, agent steps, signal handling, session resume)
+Follow the commander pattern from agent-gauntlet (`/Users/pcaplan/paul/agent-gauntlet`): each command file exports a `register*Command(program: Command)` function.
 
-**Conventions:**
-- Follow the commander pattern from agent-gauntlet: each command file exports a `register*Command(program: Command)` function
-- Use `bun test` with `describe`/`it`/`expect` (Bun's built-in test API)
-- Runner tests need to mock `Bun.spawn` since the runner spawns real processes
+Add unit tests: `test/schema.test.ts` (Zod schema validation — valid workflows parse, invalid ones reject, defaults apply), `test/loader.test.ts` (`loadWorkflow` with fixture YAML files, `interpolateParams` with valid/missing params), `test/runner.test.ts` (runner behavior with mocked process spawning — shell steps, agent steps, signal handling, session resume). Use `bun test` with `describe`/`it`/`expect`. Runner tests need to mock `Bun.spawn` since the runner spawns real processes.
+
+This is a pure refactoring task with no behavioral changes — it delivers the CLI structure and test foundation needed for subsequent work.
 
 ## Done When
 

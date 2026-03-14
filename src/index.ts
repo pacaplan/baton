@@ -33,7 +33,7 @@ function parseArgs(args: string[]): {
   let from: string | undefined;
 
   for (let i = 0; i < rest.length; i++) {
-    const arg = rest[i];
+    const arg = rest[i] as string;
     const nextArg = rest[i + 1];
     if (arg === '--from' && nextArg) {
       from = nextArg;
@@ -57,7 +57,8 @@ export async function main(args: string[]): Promise<number> {
         const params: Record<string, string> = {};
         for (let i = 0; i < positional.length; i++) {
           const param = workflow.params[i];
-          if (param) params[param.name] = positional[i];
+          const value = positional[i];
+          if (param && value) params[param.name] = value;
         }
         await runWorkflow(workflow, params, { from });
         return 0;

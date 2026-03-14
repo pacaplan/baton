@@ -18,7 +18,7 @@ The workflow schema SHALL accept an optional `engine` block. The `type` field SH
 
 ### Requirement: Engine-aware step matching
 
-Engines MAY use workflow step IDs to identify which steps they manage. Baton passes the step ID to engine hooks (`enrichPrompt`, `validateStep`), and the engine determines whether it applies. No explicit mapping field exists on steps — the convention is that step IDs match engine-managed entity IDs.
+Baton SHALL pass the workflow step ID to engine hooks (`enrichPrompt`, `validateStep`), and the engine determines whether it applies. No explicit mapping field exists on steps — the convention is that step IDs match engine-managed entity IDs.
 
 #### Scenario: Engine receives step ID in hooks
 - **WHEN** baton calls `enrichPrompt` or `validateStep`

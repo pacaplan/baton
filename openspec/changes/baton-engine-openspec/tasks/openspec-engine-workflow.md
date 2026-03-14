@@ -6,7 +6,7 @@ Implement the openspec engine — the first concrete engine for baton — and up
 
 ## Background
 
-After the previous task, baton has a working engine framework: the `Engine` interface in `src/engine.ts`, a hardcoded registry, state file module, and runner integration that calls engine hooks. The registry is currently empty. This task adds the first entry.
+Baton has a working engine framework: the `Engine` interface in `src/engine.ts`, a hardcoded registry (currently empty) via `createEngine`, a state file module in `src/state.ts`, and runner integration in `src/runner.ts` that calls engine hooks. This task adds the first concrete engine.
 
 **OpenSpec engine** — Implemented in `src/engines/openspec.ts`. The engine is constructed with opaque config from the workflow's `engine` block. It requires one config field: `change_param` — the name of the workflow param that holds the openspec change name. At construction, validate that `change_param` is present (throw if missing) and that the `openspec` CLI is available (run `which openspec`, throw if not found).
 
@@ -18,21 +18,7 @@ At init time, the engine also loads the openspec schema's artifact IDs by runnin
 
 `validateWorkflow(workflow)` — Runs `openspec status --change "<name>" --json` to get the schema's artifact IDs, then verifies every artifact ID has a matching step ID in the workflow. Throws with the list of unmatched artifact IDs if any are missing. Extra steps without matching artifacts are allowed.
 
-`enrichPrompt(stepId, params)` — If `stepId` is not in the artifact ID set, return `undefined`. Otherwise run `openspec instructions <stepId> --change "<name>" --json` and build an enrichment block:
-
-```xml
-<artifact_context>
-<output_path>/absolute/path/to/change/dir/proposal.md</output_path>
-<dependencies>
-- /absolute/path/to/change/dir/proposal.md (Initial proposal document)
-</dependencies>
-<template>
-...full template content from the openspec instructions output...
-</template>
-</artifact_context>
-```
-
-The `instruction` field from the openspec output is excluded — the prompt already invokes the skill. Paths are absolute: join `changeDir` (absolute, from openspec output) with `outputPath` (relative) and with each dependency's `path` (relative).
+`enrichPrompt(stepId, params)` — If `stepId` is not in the artifact ID set, return `undefined`. Otherwise run `openspec instructions <stepId> --change "<name>" --json` and build an enrichment block wrapped in `<artifact_context>` tags. The block MUST contain three sections: `<output_path>` with the absolute artifact path (join `changeDir` + `outputPath`), `<dependencies>` listing each dependency as an absolute path with its description, and `<template>` containing the full template content from the openspec output. The `instruction` field from the openspec output SHALL be excluded — the prompt already invokes the skill. All paths MUST be absolute: join `changeDir` (absolute, from openspec output) with `outputPath` (relative) and with each dependency's `path` (relative).
 
 `validateStep(stepId, params)` — If `stepId` is not in the artifact ID set, return `true`. Otherwise run `openspec status --change "<name>" --json`, find the artifact matching `stepId`, and return `true` if its status is `"done"`, `false` otherwise.
 
