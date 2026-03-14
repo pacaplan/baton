@@ -69,7 +69,15 @@ function loadArtifactIds(changeName: string): Set<string> {
 }
 
 function resolveTemplatePath(data: OpenSpecInstructionsOutput): string {
-  return join(data.changeDir, '..', '..', 'schemas', data.schemaName, 'templates', `${data.artifactId}.md`);
+  return join(
+    data.changeDir,
+    '..',
+    '..',
+    'schemas',
+    data.schemaName,
+    'templates',
+    `${data.artifactId}.md`,
+  );
 }
 
 function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
@@ -77,8 +85,8 @@ function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
   const templatePath = resolveTemplatePath(data);
 
   const lines = [
-    '**Output path:** ' + outputPath,
-    '**Template:** ' + templatePath,
+    `**Output path:** ${outputPath}`,
+    `**Template:** ${templatePath}`,
   ];
 
   if (data.dependencies.length > 0) {
@@ -89,7 +97,10 @@ function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
     }
   }
 
-  lines.push('', 'Read the template file for the expected output structure. Write your output to the output path.');
+  lines.push(
+    '',
+    'Read the template file for the expected output structure. Write your output to the output path.',
+  );
 
   return lines.join('\n');
 }

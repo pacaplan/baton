@@ -1,13 +1,17 @@
-import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Subprocess } from 'bun';
+import { createRootContext, type ExecutionContext } from './context.ts';
 import type { Engine } from './engine.ts';
-import { interpolateParams } from './loader.ts';
+import { executeShellStep } from './executors/shell.ts';
 import type { Step, Workflow } from './schema.ts';
+import { shouldSkip } from './shared/flow-control.ts';
+import { interpolate } from './shared/interpolation.ts';
 import {
   computeWorkflowHash,
   deleteState,
+  type NestedStepState,
   type RunState,
   writeState,
 } from './state.ts';
@@ -23,6 +27,7 @@ export interface RunWorkflowOptions {
   stateDir?: string;
   engine?: Engine;
   sessionIds?: Record<string, string>;
+  capturedVariables?: Record<string, string>;
   /** Injected for testing: prompts user and returns their choice */
   promptUser?: PromptUserFn;
 }
@@ -35,10 +40,11 @@ function cleanSignalFile(): void {
 
 /**
  * Find the conversation ID for a claude session spawned from the given cwd.
- * Claude stores transcripts as JSONL files in ~/.claude/projects/<encoded-cwd>/.
- * The file modified most recently after `startTime` is the one from our subprocess.
  */
-function findConversationId(cwd: string, startTime: number): string | undefined {
+function findConversationId(
+  cwd: string,
+  startTime: number,
+): string | undefined {
   const encodedCwd = resolve(cwd).replace(/[/.]/g, '-');
   const projectDir = join(homedir(), '.claude', 'projects', encodedCwd);
 
@@ -48,7 +54,7 @@ function findConversationId(cwd: string, startTime: number): string | undefined 
   let bestMtime = 0;
 
   for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    if (!(entry.isFile() && entry.name.endsWith('.jsonl'))) continue;
     const fullPath = join(projectDir, entry.name);
     const stat = Bun.file(fullPath);
     const mtime = stat.lastModified;
@@ -60,123 +66,6 @@ function findConversationId(cwd: string, startTime: number): string | undefined 
 
   if (!bestFile) return undefined;
   return bestFile.replace('.jsonl', '');
-}
-
-async function runShellStep(
-  step: Step,
-  params: Record<string, string>,
-): Promise<StepOutcome> {
-  if (!step.command) return 'failed';
-  const command = interpolateParams(step.command, params);
-  console.log(`  command: ${command}`);
-
-  const proc = Bun.spawn(['sh', '-c', command], {
-    stdin: 'inherit',
-    stdout: 'inherit',
-    stderr: 'inherit',
-  });
-
-  const exitCode = await proc.exited;
-  return exitCode === 0 ? 'success' : 'failed';
-}
-
-async function runAgentStep(
-  step: Step,
-  params: Record<string, string>,
-  sessionIds: Record<string, string>,
-  engine?: Engine,
-): Promise<StepOutcome> {
-  if (!step.prompt) return 'failed';
-  let prompt = interpolateParams(step.prompt, params);
-
-  // Engine prompt enrichment (appended so slash commands stay at prompt start)
-  if (engine?.enrichPrompt) {
-    const enrichment = engine.enrichPrompt(step.id, params);
-    if (enrichment) {
-      prompt = `${prompt}\n\n${enrichment}`;
-    }
-  }
-
-  const args: string[] = ['claude'];
-
-  if (step.session === 'resume') {
-    const previousSessionId = findPreviousSessionId(sessionIds);
-    if (previousSessionId) {
-      args.push('--resume', previousSessionId);
-    }
-  }
-
-  if (step.mode === 'headless') {
-    args.push('-p');
-  }
-
-  args.push(prompt);
-  console.log(`  mode: ${step.mode}`);
-
-  if (step.mode === 'interactive') {
-    console.log('  (/continue to advance, exit to stop)\n');
-  }
-
-  cleanSignalFile();
-
-  const spawnTime = Date.now();
-  const proc = Bun.spawn(args, {
-    stdin: 'inherit',
-    stdout: 'inherit',
-    stderr: 'inherit',
-  });
-
-  let outcome: StepOutcome;
-  if (step.mode === 'interactive') {
-    outcome = await waitForSignalOrExit(proc);
-  } else {
-    const exitCode = await proc.exited;
-    outcome = exitCode === 0 ? 'success' : 'failed';
-  }
-
-  const conversationId = findConversationId(process.cwd(), spawnTime);
-  if (conversationId) {
-    sessionIds[step.id] = conversationId;
-    console.log(`  session: ${conversationId}`);
-  }
-
-  return outcome;
-}
-
-async function waitForSignalOrExit(proc: Subprocess): Promise<StepOutcome> {
-  return new Promise((resolve) => {
-    const interval = setInterval(() => {
-      if (existsSync(SIGNAL_FILE)) {
-        clearInterval(interval);
-        let action = 'continue';
-        try {
-          const raw = readFileSync(SIGNAL_FILE, 'utf-8').trim();
-          const signal = JSON.parse(raw);
-          action = signal.action ?? 'continue';
-        } catch {
-          // Malformed signal -- treat as continue
-        }
-        cleanSignalFile();
-        proc.kill('SIGTERM');
-        resolve(action === 'continue' ? 'success' : 'aborted');
-      }
-    }, 500);
-
-    proc.exited.then(() => {
-      clearInterval(interval);
-      cleanSignalFile();
-      resolve('aborted');
-    });
-  });
-}
-
-function findPreviousSessionId(
-  sessionIds: Record<string, string>,
-): string | undefined {
-  const stepIds = Object.keys(sessionIds);
-  if (stepIds.length === 0) return undefined;
-  const lastKey = stepIds[stepIds.length - 1];
-  return lastKey ? sessionIds[lastKey] : undefined;
 }
 
 function validateParams(
@@ -236,12 +125,284 @@ async function defaultPromptUser(message: string): Promise<string> {
   });
 }
 
-/** Handle engine step validation failure with user interaction. */
+export async function runWorkflow(
+  workflow: Workflow,
+  params: Record<string, string>,
+  options: RunWorkflowOptions = {},
+): Promise<boolean> {
+  const {
+    from,
+    workflowFile = '',
+    stateDir: defaultStateDir = process.cwd(),
+    engine,
+    sessionIds: initialSessionIds,
+    capturedVariables: initialCaptured,
+    promptUser = defaultPromptUser,
+  } = options;
+
+  validateParams(workflow, params);
+
+  if (engine?.validateWorkflow) {
+    engine.validateWorkflow(workflow, params);
+  }
+
+  const startIndex = resolveStartIndex(workflow, from);
+  const stateDir = resolveStateDir(engine, params, defaultStateDir);
+  const workflowHash = computeHash(workflowFile);
+
+  const context = createRootContext({
+    params,
+    workflowFile,
+    engine: engine ?? null,
+    sessionIds: initialSessionIds,
+    capturedVariables: initialCaptured,
+  });
+
+  console.log(`\nbaton: running workflow "${workflow.name}"\n`);
+
+  for (let i = startIndex; i < workflow.steps.length; i++) {
+    const step = workflow.steps[i];
+    if (!step) continue;
+
+    const shouldContinue = await dispatchStep(
+      step,
+      i,
+      workflow,
+      context,
+      workflowHash,
+      stateDir,
+      promptUser,
+    );
+    if (!shouldContinue) return false;
+  }
+
+  deleteState(stateDir);
+  console.log('baton: workflow complete');
+  return true;
+}
+
+/** Route a step to the correct executor based on its type. */
+async function executeByType(
+  step: Step,
+  stepType: string,
+  context: ExecutionContext,
+): Promise<StepOutcome> {
+  if (stepType === 'shell') return executeShellStep(step, context);
+  if (stepType === 'agent') return runAgentStep(step, context);
+  if (stepType === 'loop') {
+    throw new Error(`Loop executor not yet implemented (step "${step.id}")`);
+  }
+  if (stepType === 'sub-workflow') {
+    throw new Error(
+      `Sub-workflow executor not yet implemented (step "${step.id}")`,
+    );
+  }
+  if (stepType === 'group') {
+    throw new Error(`Group executor not yet implemented (step "${step.id}")`);
+  }
+  throw new Error(`Unknown step type for step "${step.id}"`);
+}
+
+/** Persist state after step execution. */
+function writeStepState(
+  step: Step,
+  context: ExecutionContext,
+  workflow: Workflow,
+  workflowHash: string,
+  stateDir: string,
+): void {
+  const nestedState: NestedStepState = {
+    stepId: step.id,
+    sessionIds: { ...context.sessionIds },
+    capturedVariables: { ...context.capturedVariables },
+    child: null,
+  };
+  const state: RunState = {
+    workflowFile: context.workflowFile,
+    workflowName: workflow.name,
+    currentStep: nestedState,
+    params: context.params,
+    workflowHash,
+  };
+  writeState(state, stateDir);
+}
+
+/** Handle step outcome and return whether the workflow should continue. */
+async function handleOutcome(
+  outcome: StepOutcome,
+  step: Step,
+  stepType: string,
+  context: ExecutionContext,
+  promptUser: PromptUserFn,
+): Promise<boolean> {
+  if (outcome === 'aborted') {
+    console.log('\nbaton: workflow stopped.');
+    return false;
+  }
+
+  if (outcome === 'failed') {
+    context.lastStepOutcome = 'failed';
+    if (step.continue_on_failure) {
+      console.log(`--- step "${step.id}" failed (continue_on_failure) ---\n`);
+      return true;
+    }
+    console.log(`\nbaton: step "${step.id}" failed. Stopping.`);
+    return false;
+  }
+
+  context.lastStepOutcome = 'success';
+
+  if (stepType === 'agent' && context.engine?.validateStep) {
+    const valid = context.engine.validateStep(step.id, context.params);
+    if (!valid) {
+      const ok = await handleValidationFailure(step, context, promptUser);
+      if (!ok) return false;
+    }
+  }
+
+  console.log(`--- step "${step.id}" complete ---\n`);
+  return true;
+}
+
+/** Determine the step type and route to the appropriate executor. */
+async function dispatchStep(
+  step: Step,
+  index: number,
+  workflow: Workflow,
+  context: ExecutionContext,
+  workflowHash: string,
+  stateDir: string,
+  promptUser: PromptUserFn,
+): Promise<boolean> {
+  if (shouldSkip(step, context)) {
+    console.log(
+      `--- step ${index + 1}/${workflow.steps.length}: ${step.id} [skipped] ---`,
+    );
+    return true;
+  }
+
+  const stepType = getStepType(step);
+  console.log(
+    `--- step ${index + 1}/${workflow.steps.length}: ${step.id} [${stepType}] ---`,
+  );
+
+  const outcome = await executeByType(step, stepType, context);
+  writeStepState(step, context, workflow, workflowHash, stateDir);
+  return handleOutcome(outcome, step, stepType, context, promptUser);
+}
+
+function getStepType(
+  step: Step,
+): 'shell' | 'agent' | 'loop' | 'sub-workflow' | 'group' {
+  if (step.command) return 'shell';
+  if (step.prompt || step.mode === 'interactive' || step.mode === 'headless') {
+    return 'agent';
+  }
+  if (step.loop && step.steps) return 'loop';
+  if (step.workflow) return 'sub-workflow';
+  if (step.steps) return 'group';
+  return 'shell'; // fallback
+}
+
+async function runAgentStep(
+  step: Step,
+  context: ExecutionContext,
+): Promise<StepOutcome> {
+  if (!step.prompt) return 'failed';
+  let prompt = interpolate(step.prompt, context);
+
+  if (context.engine?.enrichPrompt) {
+    const enrichment = context.engine.enrichPrompt(step.id, context.params);
+    if (enrichment) {
+      prompt = `${prompt}\n\n${enrichment}`;
+    }
+  }
+
+  const args: string[] = ['claude'];
+
+  if (step.session === 'resume') {
+    const previousSessionId = findPreviousSessionId(context.sessionIds);
+    if (previousSessionId) {
+      args.push('--resume', previousSessionId);
+    }
+  }
+
+  if (step.mode === 'headless') {
+    args.push('-p');
+  }
+
+  args.push(prompt);
+  console.log(`  mode: ${step.mode}`);
+
+  if (step.mode === 'interactive') {
+    console.log('  (/continue to advance, exit to stop)\n');
+  }
+
+  cleanSignalFile();
+
+  const spawnTime = Date.now();
+  const proc = Bun.spawn(args, {
+    stdin: 'inherit',
+    stdout: 'inherit',
+    stderr: 'inherit',
+  });
+
+  let outcome: StepOutcome;
+  if (step.mode === 'interactive') {
+    outcome = await waitForSignalOrExit(proc);
+  } else {
+    const exitCode = await proc.exited;
+    outcome = exitCode === 0 ? 'success' : 'failed';
+  }
+
+  const conversationId = findConversationId(process.cwd(), spawnTime);
+  if (conversationId) {
+    context.sessionIds[step.id] = conversationId;
+    console.log(`  session: ${conversationId}`);
+  }
+
+  return outcome;
+}
+
+async function waitForSignalOrExit(proc: Subprocess): Promise<StepOutcome> {
+  return new Promise((resolve) => {
+    const interval = setInterval(() => {
+      if (existsSync(SIGNAL_FILE)) {
+        clearInterval(interval);
+        let action = 'continue';
+        try {
+          const raw = readFileSync(SIGNAL_FILE, 'utf-8').trim();
+          const signal = JSON.parse(raw);
+          action = signal.action ?? 'continue';
+        } catch {
+          // Malformed signal -- treat as continue
+        }
+        cleanSignalFile();
+        proc.kill('SIGTERM');
+        resolve(action === 'continue' ? 'success' : 'aborted');
+      }
+    }, 500);
+
+    proc.exited.then(() => {
+      clearInterval(interval);
+      cleanSignalFile();
+      resolve('aborted');
+    });
+  });
+}
+
+function findPreviousSessionId(
+  sessionIds: Record<string, string>,
+): string | undefined {
+  const stepIds = Object.keys(sessionIds);
+  if (stepIds.length === 0) return undefined;
+  const lastKey = stepIds[stepIds.length - 1];
+  return lastKey ? sessionIds[lastKey] : undefined;
+}
+
 async function handleValidationFailure(
   step: Step,
-  params: Record<string, string>,
-  sessionIds: Record<string, string>,
-  engine: Engine,
+  context: ExecutionContext,
   promptUser: PromptUserFn,
 ): Promise<boolean> {
   console.log(
@@ -256,7 +417,7 @@ async function handleValidationFailure(
     return false;
   }
 
-  const sessionId = sessionIds[step.id];
+  const sessionId = context.sessionIds[step.id];
   if (!sessionId) {
     console.log(
       `\nbaton: cannot resume step "${step.id}" — no session ID recorded. Stopping.`,
@@ -272,123 +433,12 @@ async function handleValidationFailure(
   });
   await resumeProc.exited;
 
-  if (!engine.validateStep?.(step.id, params)) {
+  if (!context.engine?.validateStep?.(step.id, context.params)) {
     console.log(
       `\nbaton: step "${step.id}" still failed validation after resume. Stopping.`,
     );
     return false;
   }
 
-  return true;
-}
-
-export async function runWorkflow(
-  workflow: Workflow,
-  params: Record<string, string>,
-  options: RunWorkflowOptions = {},
-): Promise<void> {
-  const {
-    from,
-    workflowFile = '',
-    stateDir: defaultStateDir = process.cwd(),
-    engine,
-    sessionIds: initialSessionIds,
-    promptUser = defaultPromptUser,
-  } = options;
-
-  validateParams(workflow, params);
-
-  if (engine?.validateWorkflow) {
-    engine.validateWorkflow(workflow, params);
-  }
-
-  const startIndex = resolveStartIndex(workflow, from);
-  const stateDir = resolveStateDir(engine, params, defaultStateDir);
-  const sessionIds: Record<string, string> = initialSessionIds
-    ? { ...initialSessionIds }
-    : {};
-  const workflowHash = computeHash(workflowFile);
-
-  console.log(`\nbaton: running workflow "${workflow.name}"\n`);
-
-  for (let i = startIndex; i < workflow.steps.length; i++) {
-    const step = workflow.steps[i];
-    if (!step) continue;
-
-    const shouldContinue = await executeStep(
-      step,
-      i,
-      workflow,
-      params,
-      sessionIds,
-      workflowFile,
-      workflowHash,
-      stateDir,
-      engine,
-      promptUser,
-    );
-    if (!shouldContinue) return;
-  }
-
-  deleteState(stateDir);
-  console.log('baton: workflow complete');
-}
-
-async function executeStep(
-  step: Step,
-  index: number,
-  workflow: Workflow,
-  params: Record<string, string>,
-  sessionIds: Record<string, string>,
-  workflowFile: string,
-  workflowHash: string,
-  stateDir: string,
-  engine: Engine | undefined,
-  promptUser: PromptUserFn,
-): Promise<boolean> {
-  console.log(
-    `--- step ${index + 1}/${workflow.steps.length}: ${step.id} [${step.mode}] ---`,
-  );
-
-  const isAgentStep = step.mode !== 'shell';
-  const outcome = isAgentStep
-    ? await runAgentStep(step, params, sessionIds, engine)
-    : await runShellStep(step, params);
-
-  const state: RunState = {
-    workflowFile,
-    workflowName: workflow.name,
-    currentStep: step.id,
-    sessionIds,
-    params,
-    workflowHash,
-  };
-  writeState(state, stateDir);
-
-  if (outcome === 'aborted') {
-    console.log('\nbaton: workflow stopped.');
-    return false;
-  }
-
-  if (outcome === 'failed') {
-    console.log(`\nbaton: step "${step.id}" failed. Stopping.`);
-    return false;
-  }
-
-  if (isAgentStep && engine?.validateStep) {
-    const valid = engine.validateStep(step.id, params);
-    if (!valid) {
-      const ok = await handleValidationFailure(
-        step,
-        params,
-        sessionIds,
-        engine,
-        promptUser,
-      );
-      if (!ok) return false;
-    }
-  }
-
-  console.log(`--- step "${step.id}" complete ---\n`);
   return true;
 }

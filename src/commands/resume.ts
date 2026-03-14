@@ -5,7 +5,30 @@ import type { Engine } from '../engine.ts';
 import { createEngine } from '../engine.ts';
 import { loadWorkflow } from '../loader.ts';
 import { runWorkflow } from '../runner.ts';
+import type { NestedStepState } from '../state.ts';
 import { computeWorkflowHash, readState } from '../state.ts';
+
+function resolveStepId(currentStep: string | NestedStepState): string {
+  if (typeof currentStep === 'string') return currentStep;
+  return currentStep.stepId;
+}
+
+function resolveSessionIds(
+  currentStep: string | NestedStepState,
+  legacySessionIds?: Record<string, string>,
+): Record<string, string> {
+  if (typeof currentStep === 'string') {
+    return legacySessionIds ?? {};
+  }
+  return currentStep.sessionIds;
+}
+
+function resolveCapturedVariables(
+  currentStep: string | NestedStepState,
+): Record<string, string> {
+  if (typeof currentStep === 'string') return {};
+  return currentStep.capturedVariables;
+}
 
 export async function resumeWorkflow(stateFilePath: string): Promise<void> {
   const resolvedPath = resolve(stateFilePath);
@@ -23,12 +46,12 @@ export async function resumeWorkflow(stateFilePath: string): Promise<void> {
     );
   }
 
+  const stepId = resolveStepId(state.currentStep);
+
   // Verify currentStep still exists
-  const stepIndex = workflow.steps.findIndex((s) => s.id === state.currentStep);
+  const stepIndex = workflow.steps.findIndex((s) => s.id === stepId);
   if (stepIndex === -1) {
-    throw new Error(
-      `Step "${state.currentStep}" not found in workflow "${workflowFile}"`,
-    );
+    throw new Error(`Step "${stepId}" not found in workflow "${workflowFile}"`);
   }
 
   // Create engine if workflow has engine config
@@ -38,14 +61,21 @@ export async function resumeWorkflow(stateFilePath: string): Promise<void> {
   }
 
   const stateDir = dirname(resolvedPath);
+  const sessionIds = resolveSessionIds(state.currentStep, state.sessionIds);
+  const capturedVariables = resolveCapturedVariables(state.currentStep);
 
-  await runWorkflow(workflow, state.params, {
-    from: state.currentStep,
+  const success = await runWorkflow(workflow, state.params, {
+    from: stepId,
     workflowFile,
     stateDir,
     engine,
-    sessionIds: state.sessionIds,
+    sessionIds,
+    capturedVariables,
   });
+
+  if (!success) {
+    process.exit(1);
+  }
 }
 
 export function registerResumeCommand(program: Command): void {

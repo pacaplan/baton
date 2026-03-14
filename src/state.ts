@@ -10,13 +10,21 @@ import { join } from 'node:path';
 
 const STATE_FILE_NAME = 'baton-state.json';
 
+export interface NestedStepState {
+  stepId: string;
+  sessionIds: Record<string, string>;
+  capturedVariables: Record<string, string>;
+  child: NestedStepState | null;
+}
+
 export interface RunState {
   workflowFile: string;
   workflowName: string;
-  currentStep: string;
-  sessionIds: Record<string, string>;
+  currentStep: string | NestedStepState;
   params: Record<string, string>;
   workflowHash: string;
+  /** @deprecated Use NestedStepState.sessionIds instead for new state files */
+  sessionIds?: Record<string, string>;
 }
 
 export function writeState(state: RunState, dir: string): void {

@@ -3,26 +3,123 @@ import { z } from 'zod';
 export const StepMode = z.enum(['interactive', 'headless', 'shell']);
 export type StepMode = z.infer<typeof StepMode>;
 
-export const SessionStrategy = z.enum(['new', 'resume']);
+export const SessionStrategy = z.enum(['new', 'resume', 'inherit']);
 export type SessionStrategy = z.infer<typeof SessionStrategy>;
 
-export const StepSchema = z
+export const LoopSchema = z
   .object({
-    id: z.string(),
-    prompt: z.string().optional(),
-    command: z.string().optional(),
-    mode: StepMode,
-    session: SessionStrategy.default('new'),
+    max: z.number().optional(),
+    over: z.string().optional(),
+    as: z.string().optional(),
   })
   .refine(
-    (step) => {
-      if (step.mode === 'shell') return !!step.command;
-      return !!step.prompt;
+    (loop) => {
+      const hasMax = loop.max !== undefined;
+      const hasOver = loop.over !== undefined && loop.as !== undefined;
+      return hasMax || hasOver;
     },
-    { message: 'Shell steps require "command", agent steps require "prompt"' },
+    { message: 'Loop requires "max" or both "over" and "as"' },
   );
 
-export type Step = z.infer<typeof StepSchema>;
+export type Loop = z.infer<typeof LoopSchema>;
+
+const BaseStepSchema = z.object({
+  id: z.string(),
+  prompt: z.string().optional(),
+  command: z.string().optional(),
+  mode: StepMode.optional(),
+  session: SessionStrategy.default('new'),
+  capture: z.string().optional(),
+  continue_on_failure: z.boolean().optional(),
+  skip_if: z.enum(['previous_success']).optional(),
+  break_if: z.enum(['success', 'failure']).optional(),
+  model: z.string().optional(),
+  workflow: z.string().optional(),
+  loop: LoopSchema.optional(),
+  params: z.record(z.string(), z.string()).optional(),
+});
+
+// Use z.lazy for recursive steps field
+export const StepSchema: z.ZodType<Step> = z.lazy(() =>
+  BaseStepSchema.extend({
+    steps: z.array(StepSchema).optional(),
+  })
+    .refine(
+      (step) => {
+        return hasExactlyOneStepType(step);
+      },
+      {
+        message:
+          'Step must have exactly one of: command, prompt/mode, loop+steps, workflow, or steps (group)',
+      },
+    )
+    .refine(
+      (step) => {
+        if (step.mode === 'shell') return !!step.command;
+        if (step.mode === 'interactive' || step.mode === 'headless') {
+          return !!step.prompt;
+        }
+        return true;
+      },
+      {
+        message: 'Shell steps require "command", agent steps require "prompt"',
+      },
+    )
+    .refine(
+      (step) => {
+        if (step.capture && step.mode !== 'shell') return false;
+        return true;
+      },
+      { message: '"capture" is only allowed on shell steps' },
+    )
+    .refine(
+      (step) => {
+        if (step.model && step.mode === 'shell') return false;
+        if (step.model && !step.mode) return false;
+        return true;
+      },
+      { message: '"model" is only allowed on agent steps' },
+    ),
+);
+
+function hasExactlyOneStepType(step: {
+  command?: string;
+  prompt?: string;
+  mode?: string;
+  workflow?: string;
+  loop?: unknown;
+  steps?: unknown[];
+}): boolean {
+  const isShell = !!step.command;
+  const isAgent =
+    !!step.prompt || step.mode === 'interactive' || step.mode === 'headless';
+  const isLoop = !!step.loop && Array.isArray(step.steps);
+  const isSubWorkflow = !!step.workflow;
+  const isGroup =
+    !step.loop && Array.isArray(step.steps) && step.steps.length > 0;
+
+  const count = [isShell, isAgent, isLoop, isSubWorkflow, isGroup].filter(
+    Boolean,
+  ).length;
+  return count === 1;
+}
+
+export interface Step {
+  id: string;
+  prompt?: string;
+  command?: string;
+  mode?: StepMode;
+  session: SessionStrategy;
+  capture?: string;
+  continue_on_failure?: boolean;
+  skip_if?: 'previous_success';
+  break_if?: 'success' | 'failure';
+  model?: string;
+  workflow?: string;
+  loop?: Loop;
+  params?: Record<string, string>;
+  steps?: Step[];
+}
 
 export const ParamSchema = z.object({
   name: z.string(),

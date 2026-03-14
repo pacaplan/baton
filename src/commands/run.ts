@@ -31,11 +31,15 @@ export function registerRunCommand(program: Command): void {
           engine = createEngine(workflow.engine as Record<string, unknown>);
         }
 
-        await runWorkflow(workflow, params, {
+        const success = await runWorkflow(workflow, params, {
           from: options.from,
           workflowFile: resolve(file),
           engine,
         });
+
+        if (!success) {
+          process.exit(1);
+        }
       },
     );
 }

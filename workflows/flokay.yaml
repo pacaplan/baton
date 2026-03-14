@@ -39,17 +39,17 @@ steps:
     mode: headless
     session: resume
     prompt: |
-      /gauntlet-run review the change. 
+      /gauntlet-run review the change.
       Then write review.md summarizing the results.
 
   - id: implement
-    mode: interactive
-    session: new
-    prompt: /opsx:apply "{{change_name}}"
+    workflow: workflows/implement-change.yaml
+    params:
+      change_name: "{{change_name}}"
 
   - id: verify
     mode: headless
-    session: resume
+    session: new
     prompt: /gauntlet-run verify the implementation
 
   - id: archive
