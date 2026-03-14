@@ -12,7 +12,10 @@
     "build": "bun build --compile --minify --sourcemap ./src/index.ts --outfile bin/baton",
     "test": "bun test",
     "lint": "biome check src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "baton": "bun src/index.ts",
+    "validate": "bun src/index.ts validate",
+    "run:flokay": "bun src/index.ts run workflows/flokay.yaml"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.3",

@@ -5,8 +5,6 @@ agent: claude-code
 params:
   - name: change_name
     required: true
-  - name: description
-    required: true
 
 steps:
   - id: create
@@ -16,52 +14,41 @@ steps:
   - id: propose
     mode: interactive
     session: new
-    prompt: |
-      Run /flokay:propose for a change called "{{change_name}}":
-      {{description}}
+    prompt: /flokay:propose "{{change_name}}"
 
   - id: specs
     mode: interactive
     session: resume
-    prompt: |
-      Run /flokay:spec for change "{{change_name}}".
-      Read openspec/changes/{{change_name}}/proposal.md for context.
+    prompt: /flokay:spec
 
   - id: design
     mode: interactive
     session: new
-    prompt: |
-      Run /flokay:design for change "{{change_name}}".
-      Read the proposal and all specs in openspec/changes/{{change_name}}/.
+    prompt: /flokay:design
 
   - id: tasks
     mode: headless
     session: new
-    prompt: |
-      Run /flokay:plan-tasks for change "{{change_name}}".
-      Read the design at openspec/changes/{{change_name}}/design.md.
+    prompt: /flokay:plan-tasks
 
   - id: review
     mode: headless
     session: resume
     prompt: |
-      Run /gauntlet-run to review change "{{change_name}}".
-      Write review.md summarizing the results.
+      /gauntlet-run review the change. 
+      Then write review.md summarizing the results.
 
   - id: implement
     mode: interactive
     session: new
-    prompt: |
-      Run /opsx:apply on "{{change_name}}"
+    prompt: /opsx:apply "{{change_name}}"
 
   - id: verify
     mode: headless
     session: resume
-    prompt: |
-      Run /gauntlet-run to verify the implementation.
+    prompt: /gauntlet-run verify the implementation
 
   - id: finalize
     mode: headless
-    session: new
-    prompt: |
-      Run /flokay:finalize-pr for "{{change_name}}"
+    session: resume
+    prompt: /flokay:finalize-pr
