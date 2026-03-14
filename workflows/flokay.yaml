@@ -5,16 +5,24 @@ agent: claude-code
 params:
   - name: change_name
     required: true
+  - name: idea_file
+    required: false
+
+engine:
+  type: openspec
+  change_param: change_name
 
 steps:
   - id: create
     mode: shell
     command: openspec new change "{{change_name}}"
 
-  - id: propose
+  - id: proposal
     mode: interactive
     session: new
-    prompt: /flokay:propose "{{change_name}}"
+    prompt: |
+      /flokay:propose "{{change_name}}"
+      {{file:idea_file}}
 
   - id: specs
     mode: interactive
@@ -47,6 +55,17 @@ steps:
     mode: headless
     session: resume
     prompt: /gauntlet-run verify the implementation
+
+  - id: archive
+    mode: headless
+    session: resume
+    prompt: |
+      /opsx:archive
+      Always sync delta specs to main specs automatically — do not prompt the user about syncing.
+
+  - id: archive-verify
+    mode: shell
+    command: agent-gauntlet skip
 
   - id: finalize
     mode: headless

@@ -24,7 +24,6 @@ entry_points:
       - security-deps
     reviews:
       - code-quality
-      - task-compliance
   - path: "openspec/changes"
     exclude:
       - "openspec/changes/archive"
@@ -38,7 +37,6 @@ entry_points:
 # -------------------------------------------------------------------
 
 # Git ref for detecting local changes via git diff (default: origin/main)
-# base_branch: origin/main
 
 # Directory for per-job logs (default: gauntlet_logs)
 # log_dir: gauntlet_logs

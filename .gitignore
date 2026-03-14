@@ -5,3 +5,4 @@ bin/
 .DS_Store
 gauntlet_logs
 .gauntlet/current-task-context.md
+.claude/worktrees/

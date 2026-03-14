@@ -14,7 +14,9 @@
     "lint": "biome check src",
     "typecheck": "tsc --noEmit",
     "baton": "bun src/index.ts",
+    "run": "bun src/index.ts run",
     "validate": "bun src/index.ts validate",
+    "resume": "bun src/index.ts resume",
     "run:flokay": "bun src/index.ts run workflows/flokay.yaml"
   },
   "devDependencies": {
@@ -25,6 +27,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "commander": "^14.0.3",
     "yaml": "^2.8.2",
     "zod": "^4.3.5"
   }
