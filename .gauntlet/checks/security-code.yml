@@ -1,4 +1,5 @@
-command: semgrep scan --config auto --error src
+command: semgrep scan --config auto --error .
+working_directory: "."
 parallel: true
 run_in_ci: true
 run_locally: true
