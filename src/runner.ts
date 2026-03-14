@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import type { Subprocess } from 'bun';
 import { createRootContext, type ExecutionContext } from './context.ts';
 import type { Engine } from './engine.ts';
+import { executeLoopStep, type LoopResult } from './executors/loop.ts';
 import { executeShellStep } from './executors/shell.ts';
 import type { Step, Workflow } from './schema.ts';
 import { shouldSkip } from './shared/flow-control.ts';
@@ -20,6 +21,11 @@ const SIGNAL_FILE = '.baton-signal';
 
 type StepOutcome = 'success' | 'failed' | 'aborted';
 type PromptUserFn = (message: string) => Promise<string>;
+
+interface StepExecutionResult {
+  outcome: StepOutcome;
+  loopResult?: LoopResult;
+}
 
 export interface RunWorkflowOptions {
   from?: string;
@@ -186,11 +192,20 @@ async function executeByType(
   step: Step,
   stepType: string,
   context: ExecutionContext,
-): Promise<StepOutcome> {
-  if (stepType === 'shell') return executeShellStep(step, context);
-  if (stepType === 'agent') return runAgentStep(step, context);
+): Promise<StepExecutionResult> {
+  if (stepType === 'shell') {
+    return { outcome: await executeShellStep(step, context) };
+  }
+  if (stepType === 'agent') {
+    return { outcome: await runAgentStep(step, context) };
+  }
   if (stepType === 'loop') {
-    throw new Error(`Loop executor not yet implemented (step "${step.id}")`);
+    const loopResult = await executeLoopStep(step, context);
+    let outcome: StepOutcome = 'failed';
+    if (loopResult.outcome === 'success') {
+      outcome = 'success';
+    }
+    return { outcome, loopResult };
   }
   if (stepType === 'sub-workflow') {
     throw new Error(
@@ -198,7 +213,7 @@ async function executeByType(
     );
   }
   if (stepType === 'group') {
-    throw new Error(`Group executor not yet implemented (step "${step.id}")`);
+    return { outcome: await executeGroupStepInRunner(step, context) };
   }
   throw new Error(`Unknown step type for step "${step.id}"`);
 }
@@ -210,12 +225,26 @@ function writeStepState(
   workflow: Workflow,
   workflowHash: string,
   stateDir: string,
+  loopResult?: LoopResult,
 ): void {
+  let child: NestedStepState | null = null;
+
+  if (loopResult && loopResult.lastIteration >= 0) {
+    child = {
+      stepId: `${step.id}:iteration`,
+      sessionIds: {},
+      capturedVariables: {
+        _iteration: String(loopResult.lastIteration),
+      },
+      child: null,
+    };
+  }
+
   const nestedState: NestedStepState = {
     stepId: step.id,
     sessionIds: { ...context.sessionIds },
     capturedVariables: { ...context.capturedVariables },
-    child: null,
+    child,
   };
   const state: RunState = {
     workflowFile: context.workflowFile,
@@ -286,9 +315,16 @@ async function dispatchStep(
     `--- step ${index + 1}/${workflow.steps.length}: ${step.id} [${stepType}] ---`,
   );
 
-  const outcome = await executeByType(step, stepType, context);
-  writeStepState(step, context, workflow, workflowHash, stateDir);
-  return handleOutcome(outcome, step, stepType, context, promptUser);
+  const result = await executeByType(step, stepType, context);
+  writeStepState(
+    step,
+    context,
+    workflow,
+    workflowHash,
+    stateDir,
+    result.loopResult,
+  );
+  return handleOutcome(result.outcome, step, stepType, context, promptUser);
 }
 
 function getStepType(
@@ -302,6 +338,25 @@ function getStepType(
   if (step.workflow) return 'sub-workflow';
   if (step.steps) return 'group';
   return 'shell'; // fallback
+}
+
+async function executeGroupStepInRunner(
+  step: Step,
+  context: ExecutionContext,
+): Promise<StepOutcome> {
+  if (!step.steps) return 'failed';
+  for (const child of step.steps) {
+    const childType = getStepType(child);
+    const result = await executeByType(child, childType, context);
+    if (result.outcome === 'aborted') {
+      return 'aborted';
+    }
+    context.lastStepOutcome = result.outcome;
+    if (result.outcome === 'failed' && !child.continue_on_failure) {
+      return 'failed';
+    }
+  }
+  return 'success';
 }
 
 async function runAgentStep(

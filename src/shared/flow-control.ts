@@ -14,3 +14,19 @@ export function shouldSkip(step: Step, context: ExecutionContext): boolean {
 
   return false;
 }
+
+/**
+ * Evaluate whether a step's break_if condition is met.
+ * Returns true if the loop should break.
+ */
+export function evaluateBreakIf(
+  step: Step,
+  outcome: 'success' | 'failed',
+): boolean {
+  if (!step.break_if) return false;
+
+  if (step.break_if === 'success') return outcome === 'success';
+  if (step.break_if === 'failure') return outcome === 'failed';
+
+  return false;
+}

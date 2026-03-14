@@ -352,21 +352,33 @@ describe('dispatcher: loop and sub-workflow stubs', () => {
     }
   });
 
-  it('throws not yet implemented for loop steps', async () => {
+  it('executes loop steps via loop executor', async () => {
     const wf = makeWorkflow({
       steps: [
         {
           id: 'loop1',
           loop: { max: 3 },
-          steps: [{ id: 'body', mode: 'shell', command: 'echo hi', session: 'new' }],
+          steps: [
+            {
+              id: 'body',
+              mode: 'shell',
+              command: 'echo hi',
+              session: 'new',
+              break_if: 'success' as const,
+            },
+          ],
           session: 'new',
         },
       ],
     });
 
-    await expect(
-      runWorkflow(wf, {}, { workflowFile: 'test.yaml', stateDir: testStateDir }),
-    ).rejects.toThrow(/not yet implemented/i);
+    const result = await runWorkflow(wf, {}, {
+      workflowFile: 'test.yaml',
+      stateDir: testStateDir,
+    });
+
+    expect(result).toBe(true);
+    expect(spawnSpy).toHaveBeenCalledTimes(1);
   });
 
   it('throws not yet implemented for sub-workflow steps', async () => {
