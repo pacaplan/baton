@@ -1,0 +1,4 @@
+- [ ] Shell Executor + Code Structure Foundation (`tasks/shell-executor-foundation.md`)
+- [ ] Loop Executor (`tasks/loop-executor.md`)
+- [ ] Sub-Workflow Executor (`tasks/sub-workflow-executor.md`)
+- [ ] Agent Executor + Documentation (`tasks/agent-executor-docs.md`)
