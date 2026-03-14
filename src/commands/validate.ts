@@ -1,6 +1,25 @@
 import type { Command } from 'commander';
 import { createEngine } from '../engine.ts';
 import { loadWorkflow } from '../loader.ts';
+import type { Workflow } from '../schema.ts';
+
+async function runEngineValidation(
+  workflow: Workflow,
+  params: Record<string, string>,
+  hasRequiredParams: boolean,
+): Promise<void> {
+  if (!workflow.engine) return;
+  const engine = createEngine(workflow.engine as Record<string, unknown>);
+  if (!engine.validateWorkflow) return;
+
+  if (hasRequiredParams) {
+    await engine.validateWorkflow(workflow, params);
+  } else {
+    console.log(
+      '  (skipping engine validation — required params not provided)',
+    );
+  }
+}
 
 export function registerValidateCommand(program: Command): void {
   program
@@ -22,18 +41,7 @@ export function registerValidateCommand(program: Command): void {
         (p) => !p.required || params[p.name],
       );
 
-      if (workflow.engine) {
-        const engine = createEngine(workflow.engine as Record<string, unknown>);
-        if (engine.validateWorkflow) {
-          if (hasRequiredParams) {
-            await engine.validateWorkflow(workflow, params);
-          } else {
-            console.log(
-              '  (skipping engine validation — required params not provided)',
-            );
-          }
-        }
-      }
+      await runEngineValidation(workflow, params, hasRequiredParams);
 
       console.log(`Workflow "${workflow.name}" is valid.`);
       console.log(`  ${workflow.steps.length} steps`);

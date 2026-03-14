@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Subprocess } from 'bun';
@@ -38,7 +38,10 @@ function cleanSignalFile(): void {
  * Claude stores transcripts as JSONL files in ~/.claude/projects/<encoded-cwd>/.
  * The file modified most recently after `startTime` is the one from our subprocess.
  */
-function findConversationId(cwd: string, startTime: number): string | undefined {
+function findConversationId(
+  cwd: string,
+  startTime: number,
+): string | undefined {
   const encodedCwd = resolve(cwd).replace(/[/.]/g, '-');
   const projectDir = join(homedir(), '.claude', 'projects', encodedCwd);
 
@@ -48,7 +51,7 @@ function findConversationId(cwd: string, startTime: number): string | undefined 
   let bestMtime = 0;
 
   for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    if (!(entry.isFile() && entry.name.endsWith('.jsonl'))) continue;
     const fullPath = join(projectDir, entry.name);
     const stat = Bun.file(fullPath);
     const mtime = stat.lastModified;
