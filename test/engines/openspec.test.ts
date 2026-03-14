@@ -51,6 +51,7 @@ const STATUS_OUTPUT = JSON.stringify({
 
 const INSTRUCTIONS_OUTPUT = JSON.stringify({
   artifactId: 'proposal',
+  schemaName: 'flokay',
   instruction: 'Write a proposal document',
   outputPath: 'artifacts/proposal.md',
   template: '# Proposal\n\nWrite your proposal here.',
@@ -152,6 +153,19 @@ describe('OpenSpecEngine', () => {
       expect(() => engine.validateWorkflow(wf, { change_name: 'my-change' })).toThrow('proposal');
     });
 
+    it('skips validation when the change does not exist yet', () => {
+      whichSpy.mockReturnValue('/usr/local/bin/openspec');
+      spawnSyncSpy.mockImplementation(() =>
+        mockSyncResult('', 1, "Change 'new-change' not found."),
+      );
+
+      const { createOpenSpecEngine } = require('../../src/engines/openspec.ts');
+      const engine = createOpenSpecEngine({ change_param: 'change_name' });
+      const wf = makeWorkflow();
+
+      expect(() => engine.validateWorkflow(wf, { change_name: 'new-change' })).not.toThrow();
+    });
+
     it('passes when workflow has extra steps without matching artifacts', () => {
       whichSpy.mockReturnValue('/usr/local/bin/openspec');
       spawnSyncSpy.mockImplementation(() => mockSyncResult(STATUS_OUTPUT, 0));
@@ -176,7 +190,7 @@ describe('OpenSpecEngine', () => {
   });
 
   describe('enrichPrompt', () => {
-    it('returns artifact_context block with output_path, dependencies, and template', () => {
+    it('returns artifact_context block with output_path, template_path, and dependencies', () => {
       whichSpy.mockReturnValue('/usr/local/bin/openspec');
       spawnSyncSpy.mockImplementation((args: string[]) => {
         if (args[0] === 'openspec' && args[1] === 'status') {
@@ -203,15 +217,19 @@ describe('OpenSpecEngine', () => {
       expect(result).toContain(
         '/absolute/path/to/openspec/changes/my-change/artifacts/proposal.md',
       );
+      expect(result).toContain('<template_path>');
+      expect(result).toContain('schemas/flokay/templates/proposal.md');
       expect(result).toContain('<dependencies>');
       expect(result).toContain('/absolute/path/to/openspec/changes/my-change/some/dep.md');
       expect(result).toContain('/absolute/path/to/openspec/changes/my-change/another/dep.txt');
       expect(result).toContain('A dependency file');
       expect(result).toContain('Another dependency');
-      expect(result).toContain('<template>');
-      expect(result).toContain('# Proposal\n\nWrite your proposal here.');
+      // Template content should NOT be inlined
+      expect(result).not.toContain('# Proposal\n\nWrite your proposal here.');
       // The instruction field should be excluded
       expect(result).not.toContain('Write a proposal document');
+      // Should include read instruction
+      expect(result).toContain('Read the template file');
     });
 
     it('returns undefined for non-artifact step IDs', () => {

@@ -71,11 +71,11 @@ async function runAgentStep(
   if (!step.prompt) return 'failed';
   let prompt = interpolateParams(step.prompt, params);
 
-  // Engine prompt enrichment
+  // Engine prompt enrichment (appended so slash commands stay at prompt start)
   if (engine?.enrichPrompt) {
     const enrichment = engine.enrichPrompt(step.id, params);
     if (enrichment) {
-      prompt = `${enrichment}\n\n${prompt}`;
+      prompt = `${prompt}\n\n${enrichment}`;
     }
   }
 

@@ -245,10 +245,10 @@ describe('runWorkflow with engine', () => {
     expect(spawnSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('calls enrichPrompt and prepends result to agent step prompt', async () => {
+  it('calls enrichPrompt and appends result after agent step prompt', async () => {
     const engine: Engine = {
       enrichPrompt: (_stepId: string, _params: Record<string, string>) => {
-        return 'Engine context: do this first.';
+        return 'Engine context: artifact info here.';
       },
     };
 
@@ -262,10 +262,10 @@ describe('runWorkflow with engine', () => {
     const callArgs = spawnSpy.mock.calls[0]?.[0] as string[];
     // The last arg should be the combined prompt
     const promptArg = callArgs[callArgs.length - 1];
-    expect(promptArg).toContain('Engine context: do this first.');
+    expect(promptArg).toContain('Engine context: artifact info here.');
     expect(promptArg).toContain('Design the feature');
-    // Engine context should come first
-    expect(promptArg!.indexOf('Engine context')).toBeLessThan(promptArg!.indexOf('Design the feature'));
+    // Prompt should come first, engine context appended after
+    expect(promptArg!.indexOf('Design the feature')).toBeLessThan(promptArg!.indexOf('Engine context'));
   });
 
   it('does not modify prompt when enrichPrompt returns undefined', async () => {

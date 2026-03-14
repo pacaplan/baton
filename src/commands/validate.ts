@@ -18,10 +18,20 @@ export function registerValidateCommand(program: Command): void {
         if (param && value) params[param.name] = value;
       }
 
+      const hasRequiredParams = workflow.params.every(
+        (p) => !p.required || params[p.name],
+      );
+
       if (workflow.engine) {
         const engine = createEngine(workflow.engine as Record<string, unknown>);
         if (engine.validateWorkflow) {
-          await engine.validateWorkflow(workflow, params);
+          if (hasRequiredParams) {
+            await engine.validateWorkflow(workflow, params);
+          } else {
+            console.log(
+              '  (skipping engine validation — required params not provided)',
+            );
+          }
         }
       }
 

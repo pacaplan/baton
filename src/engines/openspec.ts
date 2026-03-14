@@ -20,6 +20,7 @@ interface OpenSpecDependency {
 
 interface OpenSpecInstructionsOutput {
   artifactId: string;
+  schemaName: string;
   instruction: string;
   outputPath: string;
   template: string;
@@ -67,27 +68,35 @@ function loadArtifactIds(changeName: string): Set<string> {
   return new Set(status.artifacts.map((a) => a.id));
 }
 
+function resolveTemplatePath(data: OpenSpecInstructionsOutput): string {
+  return join(data.changeDir, '..', '..', 'schemas', data.schemaName, 'templates', `${data.artifactId}.md`);
+}
+
 function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
   const outputPath = join(data.changeDir, data.outputPath);
+  const templatePath = resolveTemplatePath(data);
 
   const depLines = data.dependencies.map((dep) => {
     const absPath = join(data.changeDir, dep.path);
     return `- ${absPath}: ${dep.description}`;
   });
 
-  return [
+  const lines = [
     '<artifact_context>',
-    '<output_path>',
-    outputPath,
-    '</output_path>',
-    '<dependencies>',
-    ...depLines,
-    '</dependencies>',
-    '<template>',
-    data.template,
-    '</template>',
+    `<output_path>${outputPath}</output_path>`,
+    `<template_path>${templatePath}</template_path>`,
+  ];
+
+  if (depLines.length > 0) {
+    lines.push('<dependencies>', ...depLines, '</dependencies>');
+  }
+
+  lines.push(
+    'Read the template file for the expected output structure. Write your output to the output_path.',
     '</artifact_context>',
-  ].join('\n');
+  );
+
+  return lines.join('\n');
 }
 
 export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
@@ -121,7 +130,12 @@ export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
 
     validateWorkflow(workflow: Workflow, params: Record<string, string>): void {
       const changeName = getChangeName(changeParam, params);
-      artifactIds = loadArtifactIds(changeName);
+      try {
+        artifactIds = loadArtifactIds(changeName);
+      } catch {
+        // Change doesn't exist yet — skip validation (a workflow step may create it)
+        return;
+      }
 
       const stepIds = new Set(workflow.steps.map((s) => s.id));
       const unmatched = [...artifactIds].filter((id) => !stepIds.has(id));
