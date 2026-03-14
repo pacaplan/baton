@@ -78,6 +78,53 @@ describe('StepSchema', () => {
       }),
     ).toThrow();
   });
+
+  it('accepts a sub-workflow step with workflow field', () => {
+    const result = StepSchema.parse({
+      id: 'invoke',
+      workflow: 'child.yaml',
+    });
+    expect(result.workflow).toBe('child.yaml');
+  });
+
+  it('accepts a sub-workflow step with params', () => {
+    const result = StepSchema.parse({
+      id: 'invoke',
+      workflow: 'child.yaml',
+      params: { task: 'build' },
+    });
+    expect(result.params).toEqual({ task: 'build' });
+  });
+
+  it('rejects workflow step with command', () => {
+    expect(() =>
+      StepSchema.parse({
+        id: 'bad',
+        workflow: 'child.yaml',
+        command: 'echo hi',
+      }),
+    ).toThrow(/exactly one/);
+  });
+
+  it('rejects workflow step with prompt', () => {
+    expect(() =>
+      StepSchema.parse({
+        id: 'bad',
+        workflow: 'child.yaml',
+        prompt: 'do something',
+      }),
+    ).toThrow(/exactly one/);
+  });
+
+  it('rejects workflow step with mode', () => {
+    expect(() =>
+      StepSchema.parse({
+        id: 'bad',
+        workflow: 'child.yaml',
+        mode: 'interactive',
+      }),
+    ).toThrow(/exactly one/);
+  });
 });
 
 describe('ParamSchema', () => {

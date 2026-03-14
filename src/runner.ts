@@ -6,6 +6,7 @@ import { createRootContext, type ExecutionContext } from './context.ts';
 import type { Engine } from './engine.ts';
 import { executeLoopStep, type LoopResult } from './executors/loop.ts';
 import { executeShellStep } from './executors/shell.ts';
+import { executeSubWorkflowStep } from './executors/sub-workflow.ts';
 import type { Step, Workflow } from './schema.ts';
 import { shouldSkip } from './shared/flow-control.ts';
 import { interpolate } from './shared/interpolation.ts';
@@ -208,9 +209,7 @@ async function executeByType(
     return { outcome, loopResult };
   }
   if (stepType === 'sub-workflow') {
-    throw new Error(
-      `Sub-workflow executor not yet implemented (step "${step.id}")`,
-    );
+    return { outcome: await executeSubWorkflowStep(step, context) };
   }
   if (stepType === 'group') {
     return { outcome: await executeGroupStepInRunner(step, context) };

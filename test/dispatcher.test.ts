@@ -381,7 +381,7 @@ describe('dispatcher: loop and sub-workflow stubs', () => {
     expect(spawnSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('throws not yet implemented for sub-workflow steps', async () => {
+  it('throws descriptive error for missing sub-workflow file', async () => {
     const wf = makeWorkflow({
       steps: [
         {
@@ -394,6 +394,6 @@ describe('dispatcher: loop and sub-workflow stubs', () => {
 
     await expect(
       runWorkflow(wf, {}, { workflowFile: 'test.yaml', stateDir: testStateDir }),
-    ).rejects.toThrow(/not yet implemented/i);
+    ).rejects.toThrow(/sub\.yaml/);
   });
 });

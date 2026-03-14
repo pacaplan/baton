@@ -3,11 +3,21 @@ import { parse as parseYaml } from 'yaml';
 import type { Step, Workflow } from './schema.ts';
 import { WorkflowSchema } from './schema.ts';
 
-export function loadWorkflow(filePath: string): Workflow {
+export interface LoadWorkflowOptions {
+  /** When true, allows session: inherit at the top level */
+  isSubWorkflow?: boolean;
+}
+
+export function loadWorkflow(
+  filePath: string,
+  options?: LoadWorkflowOptions,
+): Workflow {
   const raw = readFileSync(filePath, 'utf-8');
   const parsed = parseYaml(raw);
   const workflow = WorkflowSchema.parse(parsed);
-  validateWorkflowConstraints(workflow);
+  validateWorkflowConstraints(workflow, {
+    isSubWorkflow: options?.isSubWorkflow ?? false,
+  });
   return workflow;
 }
 
@@ -15,8 +25,16 @@ export function loadWorkflow(filePath: string): Workflow {
  * Validate workflow-level constraints that cannot be expressed
  * in the Zod schema alone (positional rules like skip_if on first step).
  */
-export function validateWorkflowConstraints(workflow: Workflow): void {
-  validateStepList(workflow.steps, { insideLoop: false, isTopLevel: true });
+export interface ValidationOptions {
+  isSubWorkflow?: boolean;
+}
+
+export function validateWorkflowConstraints(
+  workflow: Workflow,
+  options?: ValidationOptions,
+): void {
+  const isTopLevel = !options?.isSubWorkflow;
+  validateStepList(workflow.steps, { insideLoop: false, isTopLevel });
 }
 
 function validateStepList(
