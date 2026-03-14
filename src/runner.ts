@@ -1,25 +1,31 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Subprocess } from 'bun';
+import type { Engine } from './engine.ts';
 import { interpolateParams } from './loader.ts';
 import type { Step, Workflow } from './schema.ts';
+import {
+  computeWorkflowHash,
+  deleteState,
+  type RunState,
+  writeState,
+} from './state.ts';
 
 const SIGNAL_FILE = '.baton-signal';
-const STATE_FILE = '.baton-state.json';
 const CLAUDE_SESSIONS_DIR = join(homedir(), '.claude', 'sessions');
 
 type StepOutcome = 'success' | 'failed' | 'aborted';
+type PromptUserFn = (message: string) => Promise<string>;
 
-interface RunState {
-  workflowName: string;
-  currentStep: number;
-  sessionIds: Record<string, string>;
-  params: Record<string, string>;
-}
-
-function saveState(state: RunState): void {
-  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+export interface RunWorkflowOptions {
+  from?: string;
+  workflowFile?: string;
+  stateDir?: string;
+  engine?: Engine;
+  sessionIds?: Record<string, string>;
+  /** Injected for testing: prompts user and returns their choice */
+  promptUser?: PromptUserFn;
 }
 
 function cleanSignalFile(): void {
@@ -59,14 +65,24 @@ async function runShellStep(
 async function runAgentStep(
   step: Step,
   params: Record<string, string>,
-  state: RunState,
+  sessionIds: Record<string, string>,
+  engine?: Engine,
 ): Promise<StepOutcome> {
   if (!step.prompt) return 'failed';
-  const prompt = interpolateParams(step.prompt, params);
+  let prompt = interpolateParams(step.prompt, params);
+
+  // Engine prompt enrichment
+  if (engine?.enrichPrompt) {
+    const enrichment = engine.enrichPrompt(step.id, params);
+    if (enrichment) {
+      prompt = `${enrichment}\n\n${prompt}`;
+    }
+  }
+
   const args: string[] = ['claude'];
 
   if (step.session === 'resume') {
-    const previousSessionId = findPreviousSessionId(state);
+    const previousSessionId = findPreviousSessionId(sessionIds);
     if (previousSessionId) {
       args.push('--resume', previousSessionId);
     }
@@ -77,7 +93,6 @@ async function runAgentStep(
   }
 
   args.push(prompt);
-
   console.log(`  mode: ${step.mode}`);
 
   if (step.mode === 'interactive') {
@@ -102,10 +117,9 @@ async function runAgentStep(
     outcome = exitCode === 0 ? 'success' : 'failed';
   }
 
-  // Capture the real session ID Claude assigned
   const realSessionId = readSessionIdFromPid(pid);
   if (realSessionId) {
-    state.sessionIds[step.id] = realSessionId;
+    sessionIds[step.id] = realSessionId;
     console.log(`  session: ${realSessionId}`);
   }
 
@@ -123,7 +137,7 @@ async function waitForSignalOrExit(proc: Subprocess): Promise<StepOutcome> {
           const signal = JSON.parse(raw);
           action = signal.action ?? 'continue';
         } catch {
-          // Malformed signal — treat as continue
+          // Malformed signal -- treat as continue
         }
         cleanSignalFile();
         proc.kill('SIGTERM');
@@ -131,7 +145,6 @@ async function waitForSignalOrExit(proc: Subprocess): Promise<StepOutcome> {
       }
     }, 500);
 
-    // Process exited without a signal — user quit, don't advance
     proc.exited.then(() => {
       clearInterval(interval);
       cleanSignalFile();
@@ -140,11 +153,13 @@ async function waitForSignalOrExit(proc: Subprocess): Promise<StepOutcome> {
   });
 }
 
-function findPreviousSessionId(state: RunState): string | undefined {
-  const stepIds = Object.keys(state.sessionIds);
+function findPreviousSessionId(
+  sessionIds: Record<string, string>,
+): string | undefined {
+  const stepIds = Object.keys(sessionIds);
   if (stepIds.length === 0) return undefined;
   const lastKey = stepIds[stepIds.length - 1];
-  return lastKey ? state.sessionIds[lastKey] : undefined;
+  return lastKey ? sessionIds[lastKey] : undefined;
 }
 
 function validateParams(
@@ -154,7 +169,7 @@ function validateParams(
   for (const param of workflow.params) {
     if (param.required && !params[param.name]) {
       if (param.default) {
-        params[param.name] = param.default; // nosemgrep: remote-property-injection — param.name is from workflow schema, not user input
+        params[param.name] = param.default; // nosemgrep: remote-property-injection
       } else {
         throw new Error(`Missing required parameter: ${param.name}`);
       }
@@ -171,20 +186,111 @@ function resolveStartIndex(workflow: Workflow, from?: string): number {
   return index;
 }
 
+function resolveStateDir(
+  engine: Engine | undefined,
+  params: Record<string, string>,
+  defaultDir: string,
+): string {
+  if (engine?.getStateDir) {
+    return engine.getStateDir(params);
+  }
+  return defaultDir;
+}
+
+function computeHash(workflowFile: string): string {
+  if (!workflowFile) return '';
+  try {
+    const content = readFileSync(workflowFile, 'utf-8');
+    return computeWorkflowHash(content);
+  } catch {
+    return '';
+  }
+}
+
+async function defaultPromptUser(message: string): Promise<string> {
+  process.stdout.write(message);
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    stdin.resume();
+    stdin.setEncoding('utf-8');
+    stdin.once('data', (data: string) => {
+      resolve(data.trim().toLowerCase());
+    });
+  });
+}
+
+/** Handle engine step validation failure with user interaction. */
+async function handleValidationFailure(
+  step: Step,
+  params: Record<string, string>,
+  sessionIds: Record<string, string>,
+  engine: Engine,
+  promptUser: PromptUserFn,
+): Promise<boolean> {
+  console.log(
+    `\nbaton: step "${step.id}" validation failed — expected artifact not found.`,
+  );
+  const choice = await promptUser(
+    '[r] Resume previous session / [q] Exit workflow: ',
+  );
+
+  if (choice !== 'r') {
+    console.log('\nbaton: workflow stopped.');
+    return false;
+  }
+
+  const sessionId = sessionIds[step.id];
+  if (!sessionId) {
+    console.log(
+      `\nbaton: cannot resume step "${step.id}" — no session ID recorded. Stopping.`,
+    );
+    return false;
+  }
+
+  console.log(`\nbaton: resuming session ${sessionId}...`);
+  const resumeProc = Bun.spawn(['claude', '--resume', sessionId], {
+    stdin: 'inherit',
+    stdout: 'inherit',
+    stderr: 'inherit',
+  });
+  await resumeProc.exited;
+
+  if (!engine.validateStep?.(step.id, params)) {
+    console.log(
+      `\nbaton: step "${step.id}" still failed validation after resume. Stopping.`,
+    );
+    return false;
+  }
+
+  return true;
+}
+
 export async function runWorkflow(
   workflow: Workflow,
   params: Record<string, string>,
-  options: { from?: string } = {},
+  options: RunWorkflowOptions = {},
 ): Promise<void> {
-  validateParams(workflow, params);
-  const startIndex = resolveStartIndex(workflow, options.from);
+  const {
+    from,
+    workflowFile = '',
+    stateDir: defaultStateDir = process.cwd(),
+    engine,
+    sessionIds: initialSessionIds,
+    promptUser = defaultPromptUser,
+  } = options;
 
-  const state: RunState = {
-    workflowName: workflow.name,
-    currentStep: startIndex,
-    sessionIds: {},
-    params,
-  };
+  validateParams(workflow, params);
+
+  if (engine?.validateWorkflow) {
+    engine.validateWorkflow(workflow);
+  }
+
+  const startIndex = resolveStartIndex(workflow, from);
+  const stateDir = resolveStateDir(engine, params, defaultStateDir);
+  const sessionIds: Record<string, string> = initialSessionIds
+    ? { ...initialSessionIds }
+    : {};
+  const workflowHash = computeHash(workflowFile);
 
   console.log(`\nbaton: running workflow "${workflow.name}"\n`);
 
@@ -192,36 +298,80 @@ export async function runWorkflow(
     const step = workflow.steps[i];
     if (!step) continue;
 
-    state.currentStep = i;
-    saveState(state);
-
-    console.log(
-      `--- step ${i + 1}/${workflow.steps.length}: ${step.id} [${step.mode}] ---`,
+    const shouldContinue = await executeStep(
+      step,
+      i,
+      workflow,
+      params,
+      sessionIds,
+      workflowFile,
+      workflowHash,
+      stateDir,
+      engine,
+      promptUser,
     );
-
-    const outcome =
-      step.mode === 'shell'
-        ? await runShellStep(step, params)
-        : await runAgentStep(step, params, state);
-
-    if (outcome === 'aborted') {
-      console.log(`\nbaton: workflow stopped.`);
-      saveState(state);
-      return;
-    }
-
-    if (outcome === 'failed') {
-      console.log(`\nbaton: step "${step.id}" failed. Stopping.`);
-      saveState(state);
-      return;
-    }
-
-    console.log(`--- step "${step.id}" complete ---\n`);
+    if (!shouldContinue) return;
   }
 
-  if (existsSync(STATE_FILE)) {
-    unlinkSync(STATE_FILE);
-  }
-
+  deleteState(stateDir);
   console.log('baton: workflow complete');
+}
+
+async function executeStep(
+  step: Step,
+  index: number,
+  workflow: Workflow,
+  params: Record<string, string>,
+  sessionIds: Record<string, string>,
+  workflowFile: string,
+  workflowHash: string,
+  stateDir: string,
+  engine: Engine | undefined,
+  promptUser: PromptUserFn,
+): Promise<boolean> {
+  console.log(
+    `--- step ${index + 1}/${workflow.steps.length}: ${step.id} [${step.mode}] ---`,
+  );
+
+  const isAgentStep = step.mode !== 'shell';
+  const outcome = isAgentStep
+    ? await runAgentStep(step, params, sessionIds, engine)
+    : await runShellStep(step, params);
+
+  const state: RunState = {
+    workflowFile,
+    workflowName: workflow.name,
+    currentStep: step.id,
+    sessionIds,
+    params,
+    workflowHash,
+  };
+  writeState(state, stateDir);
+
+  if (outcome === 'aborted') {
+    console.log('\nbaton: workflow stopped.');
+    return false;
+  }
+
+  if (outcome === 'failed') {
+    console.log(`\nbaton: step "${step.id}" failed. Stopping.`);
+    return false;
+  }
+
+  if (isAgentStep && engine?.validateStep) {
+    const valid = engine.validateStep(step.id, params);
+    if (!valid) {
+      const ok = await handleValidationFailure(
+        step,
+        params,
+        sessionIds,
+        engine,
+        promptUser,
+      );
+      if (!ok) return false;
+    }
+  }
+
+  console.log(`--- step "${step.id}" complete ---\n`);
+  return true;
 }

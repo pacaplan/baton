@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import {
+  registerResumeCommand,
   registerRunCommand,
   registerValidateCommand,
 } from './commands/index.ts';
@@ -11,6 +12,7 @@ program
   .description('CLI workflow orchestrator for AI agents')
   .version('0.1.0');
 
+registerResumeCommand(program);
 registerRunCommand(program);
 registerValidateCommand(program);
 

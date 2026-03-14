@@ -32,12 +32,21 @@ export const ParamSchema = z.object({
 
 export type Param = z.infer<typeof ParamSchema>;
 
+export const EngineSchema = z
+  .object({
+    type: z.string(),
+  })
+  .catchall(z.unknown());
+
+export type EngineConfig = z.infer<typeof EngineSchema>;
+
 export const WorkflowSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   agent: z.string().default('claude-code'),
   params: z.array(ParamSchema).default([]),
   steps: z.array(StepSchema).min(1),
+  engine: EngineSchema.optional(),
 });
 
 export type Workflow = z.infer<typeof WorkflowSchema>;

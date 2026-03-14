@@ -1,4 +1,7 @@
+import { resolve } from 'node:path';
 import type { Command } from 'commander';
+import type { Engine } from '../engine.ts';
+import { createEngine } from '../engine.ts';
 import { loadWorkflow } from '../loader.ts';
 import { runWorkflow } from '../runner.ts';
 
@@ -22,7 +25,17 @@ export function registerRunCommand(program: Command): void {
           const value = positional[i];
           if (param && value) params[param.name] = value;
         }
-        await runWorkflow(workflow, params, { from: options.from });
+
+        let engine: Engine | undefined;
+        if (workflow.engine) {
+          engine = createEngine(workflow.engine as Record<string, unknown>);
+        }
+
+        await runWorkflow(workflow, params, {
+          from: options.from,
+          workflowFile: resolve(file),
+          engine,
+        });
       },
     );
 }

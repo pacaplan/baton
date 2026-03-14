@@ -144,4 +144,31 @@ describe('WorkflowSchema', () => {
       }),
     ).toThrow();
   });
+
+  it('accepts workflow with engine block', () => {
+    const result = WorkflowSchema.parse({
+      name: 'engine-wf',
+      steps: [{ id: 's1', mode: 'shell', command: 'echo hi' }],
+      engine: { type: 'openspec', change_param: 'change_name' },
+    });
+    expect(result.engine).toEqual({ type: 'openspec', change_param: 'change_name' });
+  });
+
+  it('accepts workflow without engine block', () => {
+    const result = WorkflowSchema.parse({
+      name: 'no-engine',
+      steps: [{ id: 's1', mode: 'shell', command: 'echo hi' }],
+    });
+    expect(result.engine).toBeUndefined();
+  });
+
+  it('rejects engine block missing type', () => {
+    expect(() =>
+      WorkflowSchema.parse({
+        name: 'bad-engine',
+        steps: [{ id: 's1', mode: 'shell', command: 'echo hi' }],
+        engine: { change_param: 'change_name' },
+      }),
+    ).toThrow();
+  });
 });
