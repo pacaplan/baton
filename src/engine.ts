@@ -1,8 +1,9 @@
+import { createOpenSpecEngine } from './engines/openspec.ts';
 import type { Workflow } from './schema.ts';
 
 export interface Engine {
   getStateDir?(params: Record<string, string>): string;
-  validateWorkflow?(workflow: Workflow): void;
+  validateWorkflow?(workflow: Workflow, params: Record<string, string>): void;
   enrichPrompt?(
     stepId: string,
     params: Record<string, string>,
@@ -12,7 +13,9 @@ export interface Engine {
 
 export type EngineConstructor = (config: Record<string, unknown>) => Engine;
 
-const engineRegistry: Record<string, EngineConstructor> = {};
+const engineRegistry: Record<string, EngineConstructor> = {
+  openspec: createOpenSpecEngine,
+};
 
 export function registerEngine(type: string, ctor: EngineConstructor): void {
   engineRegistry[type] = ctor;

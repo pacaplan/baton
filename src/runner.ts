@@ -282,7 +282,7 @@ export async function runWorkflow(
   validateParams(workflow, params);
 
   if (engine?.validateWorkflow) {
-    engine.validateWorkflow(workflow);
+    engine.validateWorkflow(workflow, params);
   }
 
   const startIndex = resolveStartIndex(workflow, from);

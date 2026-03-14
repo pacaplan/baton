@@ -1,3 +1,3 @@
 - [x] Migrate CLI to commander and add test coverage (`tasks/cli-commander-tests.md`)
-- [ ] Engine framework, state file, and runner integration (`tasks/engine-framework-state-runner.md`)
+- [x] Engine framework, state file, and runner integration (`tasks/engine-framework-state-runner.md`)
 - [ ] OpenSpec engine and workflow update (`tasks/openspec-engine-workflow.md`)

@@ -6,12 +6,16 @@ params:
   - name: change_name
     required: true
 
+engine:
+  type: openspec
+  change_param: change_name
+
 steps:
   - id: create
     mode: shell
     command: openspec new change "{{change_name}}"
 
-  - id: propose
+  - id: proposal
     mode: interactive
     session: new
     prompt: /flokay:propose "{{change_name}}"
