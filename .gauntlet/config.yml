@@ -24,6 +24,14 @@ entry_points:
       - security-deps
     reviews:
       - code-quality
+      - task-compliance
+  - path: "openspec/changes"
+    exclude:
+      - "openspec/changes/archive"
+    checks:
+      - openspec-validate
+    reviews:
+      - artifact-review
 
 # -------------------------------------------------------------------
 # All settings below are optional. Uncomment and change as needed.
