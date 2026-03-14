@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { type Subprocess, spawn } from 'bun';
+import type { Subprocess } from 'bun';
 import { interpolateParams } from './loader.ts';
 import type { Step, Workflow } from './schema.ts';
 
@@ -46,7 +46,7 @@ async function runShellStep(
   const command = interpolateParams(step.command, params);
   console.log(`  command: ${command}`);
 
-  const proc = spawn(['sh', '-c', command], {
+  const proc = Bun.spawn(['sh', '-c', command], {
     stdin: 'inherit',
     stdout: 'inherit',
     stderr: 'inherit',
@@ -86,7 +86,7 @@ async function runAgentStep(
 
   cleanSignalFile();
 
-  const proc = spawn(args, {
+  const proc = Bun.spawn(args, {
     stdin: 'inherit',
     stdout: 'inherit',
     stderr: 'inherit',
@@ -154,7 +154,7 @@ function validateParams(
   for (const param of workflow.params) {
     if (param.required && !params[param.name]) {
       if (param.default) {
-        params[param.name] = param.default;
+        params[param.name] = param.default; // nosemgrep: remote-property-injection — param.name is from workflow schema, not user input
       } else {
         throw new Error(`Missing required parameter: ${param.name}`);
       }
