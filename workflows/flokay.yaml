@@ -48,6 +48,17 @@ steps:
     session: resume
     prompt: /gauntlet-run verify the implementation
 
+  - id: archive
+    mode: headless
+    session: resume
+    prompt: |
+      /opsx:archive
+      Always sync delta specs to main specs automatically — do not prompt the user about syncing.
+
+  - id: archive-verify
+    mode: shell
+    command: agent-gauntlet skip
+
   - id: finalize
     mode: headless
     session: resume
