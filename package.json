@@ -14,7 +14,9 @@
     "lint": "biome check src",
     "typecheck": "tsc --noEmit",
     "baton": "bun src/index.ts",
-    "validate": "bun src/index.ts validate",
+    "baton:run": "bun src/index.ts run",
+    "baton:validate": "bun src/index.ts validate",
+    "baton:resume": "bun src/index.ts resume",
     "run:flokay": "bun src/index.ts run workflows/flokay.yaml"
   },
   "devDependencies": {
