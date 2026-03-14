@@ -65,7 +65,7 @@ Baton writes `baton-state.json` after each step. If a workflow is interrupted, `
 
 Workflows can declare an **engine** that hooks into the execution lifecycle:
 
-- **`enrichPrompt`** -- Prepend context (templates, output paths, dependencies) to step prompts
+- **`enrichPrompt`** -- Append context (templates, output paths, dependencies) to step prompts
 - **`validateStep`** -- Verify expected output was created after a step
 - **`validateWorkflow`** -- Check workflow structure at load time
 - **`getStateDir`** -- Control where the state file lives

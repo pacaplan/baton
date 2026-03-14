@@ -353,11 +353,7 @@ async function executeStep(
     `--- step ${index + 1}/${workflow.steps.length}: ${step.id} [${step.mode}] ---`,
   );
 
-  const isAgentStep = step.mode !== 'shell';
-  const outcome = isAgentStep
-    ? await runAgentStep(step, params, sessionIds, engine)
-    : await runShellStep(step, params);
-
+  // Persist state before executing so resume replays this step on crash
   const state: RunState = {
     workflowFile,
     workflowName: workflow.name,
@@ -367,6 +363,11 @@ async function executeStep(
     workflowHash,
   };
   writeState(state, stateDir);
+
+  const isAgentStep = step.mode !== 'shell';
+  const outcome = isAgentStep
+    ? await runAgentStep(step, params, sessionIds, engine)
+    : await runShellStep(step, params);
 
   if (outcome === 'aborted') {
     console.log('\nbaton: workflow stopped.');
