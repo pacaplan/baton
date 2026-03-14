@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { Subprocess } from 'bun';
 import type { Engine } from './engine.ts';
 import { interpolateParams } from './loader.ts';
@@ -13,7 +13,6 @@ import {
 } from './state.ts';
 
 const SIGNAL_FILE = '.baton-signal';
-const CLAUDE_SESSIONS_DIR = join(homedir(), '.claude', 'sessions');
 
 type StepOutcome = 'success' | 'failed' | 'aborted';
 type PromptUserFn = (message: string) => Promise<string>;
@@ -34,14 +33,33 @@ function cleanSignalFile(): void {
   }
 }
 
-function readSessionIdFromPid(pid: number): string | undefined {
-  const sessionFile = join(CLAUDE_SESSIONS_DIR, `${pid}.json`);
-  try {
-    const data = JSON.parse(readFileSync(sessionFile, 'utf-8'));
-    return data.sessionId;
-  } catch {
-    return undefined;
+/**
+ * Find the conversation ID for a claude session spawned from the given cwd.
+ * Claude stores transcripts as JSONL files in ~/.claude/projects/<encoded-cwd>/.
+ * The file modified most recently after `startTime` is the one from our subprocess.
+ */
+function findConversationId(cwd: string, startTime: number): string | undefined {
+  const encodedCwd = resolve(cwd).replace(/[/.]/g, '-');
+  const projectDir = join(homedir(), '.claude', 'projects', encodedCwd);
+
+  if (!existsSync(projectDir)) return undefined;
+
+  let bestFile: string | undefined;
+  let bestMtime = 0;
+
+  for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    const fullPath = join(projectDir, entry.name);
+    const stat = Bun.file(fullPath);
+    const mtime = stat.lastModified;
+    if (mtime >= startTime && mtime > bestMtime) {
+      bestMtime = mtime;
+      bestFile = entry.name;
+    }
   }
+
+  if (!bestFile) return undefined;
+  return bestFile.replace('.jsonl', '');
 }
 
 async function runShellStep(
@@ -101,13 +119,12 @@ async function runAgentStep(
 
   cleanSignalFile();
 
+  const spawnTime = Date.now();
   const proc = Bun.spawn(args, {
     stdin: 'inherit',
     stdout: 'inherit',
     stderr: 'inherit',
   });
-
-  const pid = proc.pid;
 
   let outcome: StepOutcome;
   if (step.mode === 'interactive') {
@@ -117,10 +134,10 @@ async function runAgentStep(
     outcome = exitCode === 0 ? 'success' : 'failed';
   }
 
-  const realSessionId = readSessionIdFromPid(pid);
-  if (realSessionId) {
-    sessionIds[step.id] = realSessionId;
-    console.log(`  session: ${realSessionId}`);
+  const conversationId = findConversationId(process.cwd(), spawnTime);
+  if (conversationId) {
+    sessionIds[step.id] = conversationId;
+    console.log(`  session: ${conversationId}`);
   }
 
   return outcome;
