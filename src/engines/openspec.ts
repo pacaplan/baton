@@ -68,8 +68,30 @@ function loadArtifactIds(changeName: string): Set<string> {
   return new Set(status.artifacts.map((a) => a.id));
 }
 
+function tryLoadArtifactIds(changeName: string): Set<string> | null {
+  try {
+    return loadArtifactIds(changeName);
+  } catch (error) {
+    // Change doesn't exist yet — skip validation (a workflow step may create it)
+    if (error instanceof Error && /ENOENT|not found/i.test(error.message)) {
+      return null;
+    }
+    throw new Error(
+      `Failed to load OpenSpec artifacts for ${changeName}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 function resolveTemplatePath(data: OpenSpecInstructionsOutput): string {
-  return join(data.changeDir, '..', '..', 'schemas', data.schemaName, 'templates', `${data.artifactId}.md`);
+  return join(
+    data.changeDir,
+    '..',
+    '..',
+    'schemas',
+    data.schemaName,
+    'templates',
+    `${data.artifactId}.md`,
+  );
 }
 
 function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
@@ -77,8 +99,8 @@ function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
   const templatePath = resolveTemplatePath(data);
 
   const lines = [
-    '**Output path:** ' + outputPath,
-    '**Template:** ' + templatePath,
+    `**Output path:** ${outputPath}`,
+    `**Template:** ${templatePath}`,
   ];
 
   if (data.dependencies.length > 0) {
@@ -89,7 +111,10 @@ function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
     }
   }
 
-  lines.push('', 'Read the template file for the expected output structure. Write your output to the output path.');
+  lines.push(
+    '',
+    'Read the template file for the expected output structure. Write your output to the output path.',
+  );
 
   return lines.join('\n');
 }
@@ -125,12 +150,8 @@ export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
 
     validateWorkflow(workflow: Workflow, params: Record<string, string>): void {
       const changeName = getChangeName(changeParam, params);
-      try {
-        artifactIds = loadArtifactIds(changeName);
-      } catch {
-        // Change doesn't exist yet — skip validation (a workflow step may create it)
-        return;
-      }
+      artifactIds = tryLoadArtifactIds(changeName);
+      if (!artifactIds) return;
 
       const stepIds = new Set(workflow.steps.map((s) => s.id));
       const unmatched = [...artifactIds].filter((id) => !stepIds.has(id));
