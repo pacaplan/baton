@@ -5,6 +5,8 @@ agent: claude-code
 params:
   - name: change_name
     required: true
+  - name: idea_file
+    required: false
 
 steps:
   - id: create
@@ -14,7 +16,9 @@ steps:
   - id: propose
     mode: interactive
     session: new
-    prompt: /flokay:propose "{{change_name}}"
+    prompt: |
+      /flokay:propose "{{change_name}}"
+      {{file:idea_file}}
 
   - id: specs
     mode: interactive

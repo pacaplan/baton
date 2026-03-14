@@ -11,6 +11,7 @@ function usage(): string {
     '',
     'Examples:',
     '  baton run workflows/flokay.yaml add-auth',
+    '  baton run workflows/flokay.yaml add-auth ./ideas/auth.md',
     '  baton run workflows/flokay.yaml --from implement',
     '  baton validate workflows/flokay.yaml',
   ].join('\n');
