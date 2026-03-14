@@ -48,8 +48,8 @@ Baton SHALL persist workflow state to a JSON file after each step. The engine's 
 - **WHEN** a workflow has no engine block
 - **THEN** baton writes the state file to the project root
 
-#### Scenario: Workflow completes successfully
-- **WHEN** all steps complete successfully
+#### Scenario: Workflow completes
+- **WHEN** all steps complete
 - **THEN** baton deletes the state file
 
 ### Requirement: Workflow resumption

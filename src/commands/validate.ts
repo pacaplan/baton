@@ -1,4 +1,5 @@
 import type { Command } from 'commander';
+import { createEngine } from '../engine.ts';
 import { loadWorkflow } from '../loader.ts';
 
 export function registerValidateCommand(program: Command): void {
@@ -6,8 +7,26 @@ export function registerValidateCommand(program: Command): void {
     .command('validate')
     .description('Validate a workflow YAML file')
     .argument('<workflow>', 'Path to workflow YAML file')
-    .action((file: string) => {
+    .argument('[params...]', 'Positional parameters for the workflow')
+    .action((file: string, positional: string[]) => {
       const workflow = loadWorkflow(file);
+
+      const params: Record<string, string> = {};
+      for (let i = 0; i < positional.length; i++) {
+        const param = workflow.params[i];
+        const value = positional[i];
+        if (param && value) params[param.name] = value;
+      }
+
+      if (workflow.engine) {
+        const engine = createEngine(
+          workflow.engine as Record<string, unknown>,
+        );
+        if (engine.validateWorkflow) {
+          engine.validateWorkflow(workflow, params);
+        }
+      }
+
       console.log(`Workflow "${workflow.name}" is valid.`);
       console.log(`  ${workflow.steps.length} steps`);
       for (const step of workflow.steps) {
