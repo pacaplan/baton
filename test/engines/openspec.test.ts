@@ -190,7 +190,7 @@ describe('OpenSpecEngine', () => {
   });
 
   describe('enrichPrompt', () => {
-    it('returns artifact_context block with output_path, template_path, and dependencies', () => {
+    it('returns markdown enrichment with output path, template path, and dependencies', () => {
       whichSpy.mockReturnValue('/usr/local/bin/openspec');
       spawnSyncSpy.mockImplementation((args: string[]) => {
         if (args[0] === 'openspec' && args[1] === 'status') {
@@ -211,15 +211,13 @@ describe('OpenSpecEngine', () => {
       const result = engine.enrichPrompt('proposal', { change_name: 'my-change' });
 
       expect(result).toBeDefined();
-      expect(result).toContain('<artifact_context>');
-      expect(result).toContain('</artifact_context>');
-      expect(result).toContain('<output_path>');
+      expect(result).toContain('**Output path:**');
       expect(result).toContain(
         '/absolute/path/to/openspec/changes/my-change/artifacts/proposal.md',
       );
-      expect(result).toContain('<template_path>');
+      expect(result).toContain('**Template:**');
       expect(result).toContain('schemas/flokay/templates/proposal.md');
-      expect(result).toContain('<dependencies>');
+      expect(result).toContain('**Dependencies:**');
       expect(result).toContain('/absolute/path/to/openspec/changes/my-change/some/dep.md');
       expect(result).toContain('/absolute/path/to/openspec/changes/my-change/another/dep.txt');
       expect(result).toContain('A dependency file');
@@ -230,6 +228,8 @@ describe('OpenSpecEngine', () => {
       expect(result).not.toContain('Write a proposal document');
       // Should include read instruction
       expect(result).toContain('Read the template file');
+      // Should NOT contain XML tags
+      expect(result).not.toContain('<artifact_context>');
     });
 
     it('returns undefined for non-artifact step IDs', () => {

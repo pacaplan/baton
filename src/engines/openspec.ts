@@ -76,25 +76,20 @@ function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
   const outputPath = join(data.changeDir, data.outputPath);
   const templatePath = resolveTemplatePath(data);
 
-  const depLines = data.dependencies.map((dep) => {
-    const absPath = join(data.changeDir, dep.path);
-    return `- ${absPath}: ${dep.description}`;
-  });
-
   const lines = [
-    '<artifact_context>',
-    `<output_path>${outputPath}</output_path>`,
-    `<template_path>${templatePath}</template_path>`,
+    '**Output path:** ' + outputPath,
+    '**Template:** ' + templatePath,
   ];
 
-  if (depLines.length > 0) {
-    lines.push('<dependencies>', ...depLines, '</dependencies>');
+  if (data.dependencies.length > 0) {
+    lines.push('', '**Dependencies:**');
+    for (const dep of data.dependencies) {
+      const absPath = join(data.changeDir, dep.path);
+      lines.push(`- ${absPath} — ${dep.description}`);
+    }
   }
 
-  lines.push(
-    'Read the template file for the expected output structure. Write your output to the output_path.',
-    '</artifact_context>',
-  );
+  lines.push('', 'Read the template file for the expected output structure. Write your output to the output path.');
 
   return lines.join('\n');
 }
