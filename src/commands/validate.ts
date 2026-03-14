@@ -8,7 +8,7 @@ export function registerValidateCommand(program: Command): void {
     .description('Validate a workflow YAML file')
     .argument('<workflow>', 'Path to workflow YAML file')
     .argument('[params...]', 'Positional parameters for the workflow')
-    .action((file: string, positional: string[]) => {
+    .action(async (file: string, positional: string[]) => {
       const workflow = loadWorkflow(file);
 
       const params: Record<string, string> = {};
@@ -19,11 +19,9 @@ export function registerValidateCommand(program: Command): void {
       }
 
       if (workflow.engine) {
-        const engine = createEngine(
-          workflow.engine as Record<string, unknown>,
-        );
+        const engine = createEngine(workflow.engine as Record<string, unknown>);
         if (engine.validateWorkflow) {
-          engine.validateWorkflow(workflow, params);
+          await engine.validateWorkflow(workflow, params);
         }
       }
 
