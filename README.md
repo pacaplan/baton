@@ -6,6 +6,10 @@ CLI workflow orchestrator for AI agents. Runs multi-step workflows by spawning s
 
 Agents are good at execution, bad at orchestration. When given a complex multi-step workflow, they lose track of sequence, skip steps, accumulate stale context, and ignore instructions buried deep in prompts. Baton solves this by moving orchestration out of the agent entirely. Each step gets a fresh or resumed session, a focused prompt in the highest-attention position, and a single responsibility.
 
+## Why not use an existing workflow tool?
+
+There are many YAML-based workflow engines (Argo, Kestra, Step Functions) and CLI task runners (Taskfile, Just, Make). The cloud/server orchestrators have rich control flow but can't run local CLI processes. The CLI task runners can run shell commands but collapse into bash scripts the moment you need loop-until with multi-step bodies, mid-pipeline output capture, or conditional branching. None of them have the concepts that agent orchestration requires: session management across steps, interactive/headless mode switching, prompt-based agent steps, or signal-based advancement. Baton borrows proven workflow primitives (for-each, loop-until, sub-workflows, output capture) from these systems and adds a purpose-built runtime for orchestrating stateful conversational agents. See [docs/WHY-BATON.md](docs/WHY-BATON.md) for the full comparison.
+
 ## Install
 
 Requires [Bun](https://bun.sh) v1.0+.
