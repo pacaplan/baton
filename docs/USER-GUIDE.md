@@ -246,14 +246,14 @@ steps:
     prompt: "Implement the task described in {{task_file}}."
 
   - id: run-gauntlet
-    workflow: workflows/run-gauntlet.yaml
+    workflow: run-gauntlet.yaml
 ```
 
 Invoke from a parent workflow:
 
 ```yaml
 - id: implement-single-task
-  workflow: workflows/implement-task.yaml
+  workflow: implement-task.yaml
   params:
     task_file: "{{task_file}}"
 ```
@@ -426,7 +426,7 @@ The flokay workflow (`workflows/flokay.yaml`) orchestrates the full change lifec
 | `archive-verify` | shell | Skip gauntlet for archive-only changes |
 | `finalize` | headless (resume) | Push PR, wait for CI, fix failures |
 
-The `implement` step invokes `workflows/implement-change.yaml`, which loops over task files and for each one invokes `workflows/implement-task.yaml`, which itself invokes `workflows/run-gauntlet.yaml` for the verify-fix retry loop.
+The `implement` step invokes `implement-change.yaml`, which loops over task files and for each one invokes `implement-task.yaml`, which itself invokes `run-gauntlet.yaml` for the verify-fix retry loop.
 
 Run it:
 

@@ -15,6 +15,6 @@ steps:
       as: task_file
     steps:
       - id: implement-single-task
-        workflow: workflows/implement-task.yaml
+        workflow: implement-task.yaml
         params:
           task_file: "{{task_file}}"

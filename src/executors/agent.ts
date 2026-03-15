@@ -47,7 +47,7 @@ export async function executeAgentStep(
   });
 
   let outcome: StepOutcome;
-  if (step.mode === 'interactive') {
+  if (step.mode !== 'headless') {
     outcome = await waitForSignalOrExit(proc);
   } else {
     outcome = await runHeadlessWithSigint(proc);
@@ -124,8 +124,9 @@ function resolveSessionId(
 }
 
 function logStepMode(step: Step): void {
-  console.log(`  mode: ${step.mode}`);
-  if (step.mode === 'interactive') {
+  const mode = step.mode ?? 'interactive';
+  console.log(`  mode: ${mode}`);
+  if (mode !== 'headless') {
     console.log('  (/continue to advance, exit to stop)\n');
   }
 }

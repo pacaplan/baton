@@ -120,7 +120,7 @@ steps:
     prompt: /flokay:propose "{{change_name}}"
 
   - id: implement
-    workflow: workflows/implement-change.yaml
+    workflow: implement-change.yaml
     params:
       change_name: "{{change_name}}"
 

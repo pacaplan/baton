@@ -47,7 +47,7 @@ steps:
       Then write review.md summarizing the results.
 
   - id: implement
-    workflow: workflows/implement-change.yaml
+    workflow: implement-change.yaml
     params:
       change_name: "{{change_name}}"
 

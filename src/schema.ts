@@ -8,18 +8,36 @@ export type SessionStrategy = z.infer<typeof SessionStrategy>;
 
 export const LoopSchema = z
   .object({
-    max: z.number().optional(),
+    max: z.number().int().positive().optional(),
     over: z.string().optional(),
     as: z.string().optional(),
   })
-  .refine(
-    (loop) => {
-      const hasMax = loop.max !== undefined;
-      const hasOver = loop.over !== undefined && loop.as !== undefined;
-      return hasMax || hasOver;
-    },
-    { message: 'Loop requires "max" or both "over" and "as"' },
-  );
+  .superRefine((loop, ctx) => {
+    const hasMax = loop.max !== undefined;
+    const hasOver = loop.over !== undefined;
+    const hasAs = loop.as !== undefined;
+
+    if (hasMax && (hasOver || hasAs)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Loop must use either "max" or both "over" and "as", not both',
+      });
+    }
+
+    if (!hasMax && hasOver !== hasAs) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Loop requires both "over" and "as"',
+      });
+    }
+
+    if (!hasMax && !hasOver && !hasAs) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Loop requires "max" or both "over" and "as"',
+      });
+    }
+  });
 
 export type Loop = z.infer<typeof LoopSchema>;
 

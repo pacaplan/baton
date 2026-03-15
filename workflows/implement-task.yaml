@@ -14,4 +14,4 @@ steps:
       Implement the task described in {{task_file}}.
 
   - id: run-gauntlet
-    workflow: workflows/run-gauntlet.yaml
+    workflow: run-gauntlet.yaml

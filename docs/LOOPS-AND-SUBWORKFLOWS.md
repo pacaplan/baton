@@ -82,7 +82,7 @@ A step can invoke another workflow YAML file:
 
 ```yaml
 - id: implement-single-task
-  workflow: workflows/implement-task.yaml
+  workflow: implement-task.yaml
   params:
     task_file: "{{task_file}}"
 ```
@@ -196,7 +196,7 @@ steps:
       as: task_file
     steps:
       - id: implement-single-task
-        workflow: workflows/implement-task.yaml
+        workflow: implement-task.yaml
         params:
           task_file: "{{task_file}}"
 ```
@@ -216,7 +216,7 @@ steps:
     prompt: "Implement the task described in {{task_file}}."
 
   - id: run-gauntlet
-    workflow: workflows/run-gauntlet.yaml
+    workflow: run-gauntlet.yaml
 ```
 
 **workflows/run-gauntlet.yaml** -- counted retry loop with capture and flow control:
