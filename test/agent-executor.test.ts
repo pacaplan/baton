@@ -9,6 +9,7 @@ import {
 } from 'bun:test';
 import { createRootContext, createSubWorkflowContext } from '../src/context.ts';
 import type { ExecutionContext } from '../src/context.ts';
+import type { AuditEvent } from '../src/audit.ts';
 import type { Step } from '../src/schema.ts';
 
 function makeCtx(
@@ -374,5 +375,135 @@ describe('AgentExecutor: conversation ID discovery', () => {
     // step's session or be empty (no JSONL file in test env)
     // The key point is that the method runs without error
     expect(typeof ctx.sessionIds).toBe('object');
+  });
+});
+
+function makeSpyLogger() {
+  const events: AuditEvent[] = [];
+  return {
+    events,
+    emit(event: AuditEvent) { events.push(event); },
+    close() {},
+  };
+}
+
+describe('AgentExecutor: audit events', () => {
+  let spawnSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    spawnSpy = spyOn(Bun, 'spawn').mockImplementation(
+      () => makeMockProc(0) as never,
+    );
+    spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    spawnSpy.mockRestore();
+  });
+
+  it('emits step_start with prompt, mode, session strategy, resolved session ID, model, and enrichment', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const logger = makeSpyLogger();
+    const engine = {
+      enrichPrompt: () => 'Engine enrichment text',
+    };
+    const step = makeStep({
+      id: 'agent-1',
+      prompt: 'Deploy {{target}}',
+      mode: 'headless',
+      session: 'resume',
+      model: 'sonnet',
+    });
+    const ctx = makeCtx({
+      params: { target: 'staging' },
+      engine,
+      auditLogger: logger,
+    });
+    ctx.sessionIds['prev-step'] = 'abc-123';
+
+    await executeAgentStep(step, ctx);
+
+    const startEvents = logger.events.filter(e => e.type === 'step_start');
+    expect(startEvents.length).toBe(1);
+    const data = startEvents[0]!.data;
+    expect(data.prompt).toContain('Deploy staging');
+    expect(data.prompt).toContain('Engine enrichment text');
+    expect(data.mode).toBe('headless');
+    expect(data.session_strategy).toBe('resume');
+    expect(data.resolved_session_id).toBe('abc-123');
+    expect(data.model).toBe('sonnet');
+    expect(data.enrichment).toBe('Engine enrichment text');
+    expect(data.context).toEqual({
+      params: { target: 'staging' },
+      capturedVariables: {},
+    });
+  });
+
+  it('emits step_end with exit code and discovered session ID', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const logger = makeSpyLogger();
+    const step = makeStep({ id: 'agent-1', mode: 'headless' });
+    const ctx = makeCtx({ auditLogger: logger });
+
+    await executeAgentStep(step, ctx);
+
+    const endEvents = logger.events.filter(e => e.type === 'step_end');
+    expect(endEvents.length).toBe(1);
+    const data = endEvents[0]!.data;
+    expect(data.exit_code).toBe(0);
+    expect(data.outcome).toBe('success');
+    expect(typeof data.duration_ms).toBe('number');
+    // discovered_session_id may be undefined in test env (no JSONL files)
+    expect('discovered_session_id' in data).toBe(true);
+  });
+
+  it('step_end includes exit code 1 and outcome failed on non-zero exit', async () => {
+    spawnSpy.mockImplementation(() => makeMockProc(1) as never);
+    const { executeAgentStep } = await importExecutor();
+    const logger = makeSpyLogger();
+    const step = makeStep({ id: 'agent-1', mode: 'headless' });
+    const ctx = makeCtx({ auditLogger: logger });
+
+    await executeAgentStep(step, ctx);
+
+    const endEvents = logger.events.filter(e => e.type === 'step_end');
+    expect(endEvents.length).toBe(1);
+    expect(endEvents[0]!.data.exit_code).toBe(1);
+    expect(endEvents[0]!.data.outcome).toBe('failed');
+  });
+
+  it('step_start has correct prefix based on nesting path', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const logger = makeSpyLogger();
+    const step = makeStep({ id: 'agent-1', mode: 'headless' });
+    const ctx = makeCtx({ auditLogger: logger });
+    ctx.nestingPath = [{ stepId: 'loop-1', iteration: 2 }];
+
+    await executeAgentStep(step, ctx);
+
+    const startEvent = logger.events.find(e => e.type === 'step_start');
+    expect(startEvent!.prefix).toBe('[loop-1:2, agent-1]');
+  });
+
+  it('step_end does not include context snapshot', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const logger = makeSpyLogger();
+    const step = makeStep({ id: 'agent-1', mode: 'headless' });
+    const ctx = makeCtx({ auditLogger: logger, params: { env: 'staging' } });
+
+    await executeAgentStep(step, ctx);
+
+    const endEvent = logger.events.find(e => e.type === 'step_end');
+    expect(endEvent!.data.context).toBeUndefined();
+  });
+
+  it('does not emit events when auditLogger is null', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const step = makeStep({ id: 'agent-1', mode: 'headless' });
+    const ctx = makeCtx(); // no auditLogger
+
+    // Should not throw
+    const outcome = await executeAgentStep(step, ctx);
+    expect(outcome).toBe('success');
   });
 });

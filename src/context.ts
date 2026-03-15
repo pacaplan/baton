@@ -1,9 +1,11 @@
+import type { AuditLogger } from './audit.ts';
 import type { Engine } from './engine.ts';
 
 export interface NestingSegment {
   stepId: string;
   iteration?: number;
   loopVar?: Record<string, string>;
+  subWorkflowName?: string;
 }
 
 export interface ExecutionContext {
@@ -17,6 +19,7 @@ export interface ExecutionContext {
 
   workflowFile: string;
   engine: Engine | null;
+  auditLogger: AuditLogger | null;
 }
 
 export interface RootContextOptions {
@@ -25,6 +28,7 @@ export interface RootContextOptions {
   engine: Engine | null;
   sessionIds?: Record<string, string>;
   capturedVariables?: Record<string, string>;
+  auditLogger?: AuditLogger | null;
 }
 
 export function createRootContext(
@@ -41,6 +45,7 @@ export function createRootContext(
     parentContext: null,
     workflowFile: options.workflowFile,
     engine: options.engine,
+    auditLogger: options.auditLogger ?? null,
   };
 }
 
@@ -69,6 +74,7 @@ export function createLoopIterationContext(
     parentContext: parent,
     workflowFile: parent.workflowFile,
     engine: parent.engine,
+    auditLogger: parent.auditLogger,
   };
 }
 
@@ -76,6 +82,7 @@ export interface SubWorkflowContextOptions {
   stepId: string;
   params: Record<string, string>;
   workflowFile: string;
+  subWorkflowName?: string;
 }
 
 export function createSubWorkflowContext(
@@ -84,6 +91,7 @@ export function createSubWorkflowContext(
 ): ExecutionContext {
   const segment: NestingSegment = {
     stepId: options.stepId,
+    subWorkflowName: options.subWorkflowName,
   };
 
   return {
@@ -95,5 +103,6 @@ export function createSubWorkflowContext(
     parentContext: parent,
     workflowFile: options.workflowFile,
     engine: parent.engine,
+    auditLogger: parent.auditLogger,
   };
 }

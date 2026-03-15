@@ -434,6 +434,84 @@ Run it:
 baton run workflows/flokay.yaml my-feature-name
 ```
 
+## Audit logging
+
+Every workflow run produces a structured audit log for post-failure troubleshooting and visibility. Log files are stored at:
+
+```
+~/.baton/projects/{encoded-cwd}/logs/{workflow-name}-{timestamp}.log
+```
+
+The `{encoded-cwd}` replaces `/`, `.`, and `_` in your project path with `-` (e.g., `/Users/foo/my_project` becomes `-Users-foo-my-project`).
+
+### Log format
+
+Each line is a hybrid of human-scannable prefix and structured JSON:
+
+```text
+2026-03-15T18:30:00Z [validate] step_start {"command":"npm test","context":{...}}
+2026-03-15T18:30:02Z [validate] step_end {"outcome":"success","duration_ms":2000,"exit_code":0,"stderr":""}
+2026-03-15T18:30:02Z [task-loop:0, implement] step_start {"prompt":"Implement tasks/1.md",...}
+```
+
+The nesting prefix in brackets shows exactly where in the execution you are:
+
+- `[validate]` -- top-level step
+- `[task-loop:0, implement]` -- step `implement` inside loop `task-loop` at iteration 0
+- `[task-loop:0, verify, sub:verify-task, check]` -- step `check` inside sub-workflow `verify-task`, invoked from loop iteration 0
+
+### Event types
+
+The audit log emits paired start/end events at every lifecycle boundary:
+
+| Events | When |
+|--------|------|
+| `run_start` / `run_end` | Workflow execution begins and ends |
+| `step_start` / `step_end` | Before and after each step |
+| `iteration_start` / `iteration_end` | Before and after each loop iteration |
+| `sub_workflow_start` / `sub_workflow_end` | Before and after sub-workflow execution |
+| `error` | Uncaught exception during execution |
+
+### What gets captured
+
+**Start events** include a full context snapshot (all params and captured variables at that point), plus step-type-specific data:
+
+- **Shell steps**: interpolated command
+- **Agent steps**: interpolated prompt, mode, session strategy, resolved session ID, model, engine enrichment
+- **Loop steps**: loop type, max or glob pattern with resolved matches
+- **Sub-workflow steps**: resolved workflow path, interpolated params
+
+**End events** include outcome, duration in milliseconds, and step-type-specific results:
+
+- **Shell steps**: exit code, stderr (always captured), stdout (if `capture` set)
+- **Agent steps**: exit code, discovered session ID
+- **Loop steps**: iterations completed, whether break was triggered
+- **Skipped steps**: the `skip_if` condition that triggered the skip
+
+### Crash safety
+
+The audit log flushes each entry to disk immediately. If the process crashes, an `error` event and `run_end` are emitted before exit. All entries written before the crash are preserved.
+
+### Retention
+
+Log files are never automatically deleted. One file is created per workflow execution (including resumed runs). You manage cleanup yourself.
+
+### Using the log for troubleshooting
+
+When a workflow fails:
+
+1. Find the log file in `~/.baton/projects/{encoded-cwd}/logs/`
+2. Search for `step_end` events with `"outcome":"failed"` to find the failing step
+3. Check the `stderr` field for error output
+4. Look at the `step_start` event's context snapshot to see what params and variables the step received
+5. Use the nesting prefix to trace through loop iterations or sub-workflow calls
+
+You can also pipe through `jq` by splitting on the first `{`:
+
+```bash
+grep 'step_end' logfile.log | sed 's/.*{/{/' | jq 'select(.outcome=="failed")'
+```
+
 ## Troubleshooting
 
 ### "Missing required parameter"

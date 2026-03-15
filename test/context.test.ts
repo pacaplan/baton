@@ -5,6 +5,7 @@ import {
   createSubWorkflowContext,
   type ExecutionContext,
 } from '../src/context.ts';
+import { AuditLogger } from '../src/audit.ts';
 
 describe('createRootContext', () => {
   it('creates a context with provided params', () => {
@@ -85,6 +86,27 @@ describe('createLoopIterationContext', () => {
   });
 });
 
+describe('createRootContext with auditLogger', () => {
+  it('stores auditLogger when provided', () => {
+    const ctx = createRootContext({
+      params: {},
+      workflowFile: 'test.yaml',
+      engine: null,
+      auditLogger: {} as AuditLogger,
+    });
+    expect(ctx.auditLogger).toBeTruthy();
+  });
+
+  it('defaults auditLogger to null when not provided', () => {
+    const ctx = createRootContext({
+      params: {},
+      workflowFile: 'test.yaml',
+      engine: null,
+    });
+    expect(ctx.auditLogger).toBeNull();
+  });
+});
+
 describe('createSubWorkflowContext', () => {
   it('creates child context with only explicit params', () => {
     const parent = createRootContext({
@@ -105,5 +127,60 @@ describe('createSubWorkflowContext', () => {
     expect(child.sessionIds).toEqual({});
     expect(child.parentContext).toBe(parent);
     expect(child.workflowFile).toBe('child.yaml');
+  });
+
+  it('stores subWorkflowName on the nesting segment', () => {
+    const parent = createRootContext({
+      params: {},
+      workflowFile: 'parent.yaml',
+      engine: null,
+    });
+
+    const child = createSubWorkflowContext(parent, {
+      stepId: 'deploy',
+      params: {},
+      workflowFile: 'child.yaml',
+      subWorkflowName: 'deploy-sub',
+    });
+
+    const segment = child.nestingPath[child.nestingPath.length - 1];
+    expect(segment?.subWorkflowName).toBe('deploy-sub');
+  });
+
+  it('inherits auditLogger from parent', () => {
+    const mockLogger = {} as AuditLogger;
+    const parent = createRootContext({
+      params: {},
+      workflowFile: 'parent.yaml',
+      engine: null,
+      auditLogger: mockLogger,
+    });
+
+    const child = createSubWorkflowContext(parent, {
+      stepId: 'sub1',
+      params: {},
+      workflowFile: 'child.yaml',
+    });
+
+    expect(child.auditLogger).toBe(mockLogger);
+  });
+});
+
+describe('createLoopIterationContext with auditLogger', () => {
+  it('inherits auditLogger from parent', () => {
+    const mockLogger = {} as AuditLogger;
+    const parent = createRootContext({
+      params: {},
+      workflowFile: 'test.yaml',
+      engine: null,
+      auditLogger: mockLogger,
+    });
+
+    const child = createLoopIterationContext(parent, {
+      stepId: 'loop1',
+      iteration: 0,
+    });
+
+    expect(child.auditLogger).toBe(mockLogger);
   });
 });

@@ -5,11 +5,21 @@ import {
   createSubWorkflowContext,
   type ExecutionContext,
 } from '../src/context.ts';
+import type { AuditEvent } from '../src/audit.ts';
 
 import { executeSubWorkflowStep } from '../src/executors/sub-workflow.ts';
 
 const PROJECT_ROOT = join(import.meta.dir, '..');
 const PARENT_WORKFLOW = join(PROJECT_ROOT, 'parent.yaml');
+
+function makeSpyLogger() {
+  const events: AuditEvent[] = [];
+  return {
+    events,
+    emit(event: AuditEvent) { events.push(event); },
+    close() {},
+  };
+}
 
 describe('SubWorkflowExecutor', () => {
   let consoleSpy: ReturnType<typeof spyOn>;
@@ -167,5 +177,176 @@ describe('SubWorkflowExecutor', () => {
 
     const outcome = await executeSubWorkflowStep(step, parentCtx);
     expect(outcome).toBe('success');
+  });
+});
+
+describe('SubWorkflowExecutor: audit events', () => {
+  beforeEach(() => {
+    spyOn(console, 'log').mockImplementation(() => {});
+    spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('emits step_start with resolved workflow path and interpolated params', async () => {
+    const logger = makeSpyLogger();
+    const parentCtx = createRootContext({
+      params: { greeting: 'hello-from-parent' },
+      workflowFile: PARENT_WORKFLOW,
+      engine: null,
+      auditLogger: logger,
+    });
+
+    const step = {
+      id: 'run-sub',
+      session: 'new' as const,
+      workflow: 'test/fixtures/sub-workflow-with-params.yaml',
+      params: { msg: '{{greeting}}' },
+    };
+
+    await executeSubWorkflowStep(step, parentCtx);
+
+    const stepStart = logger.events.find(e =>
+      e.type === 'step_start' && e.prefix === '[run-sub]'
+    );
+    expect(stepStart).toBeTruthy();
+    expect(stepStart!.data.context).toEqual({
+      params: { greeting: 'hello-from-parent' },
+      capturedVariables: {},
+    });
+  });
+
+  it('emits step_end with outcome and duration', async () => {
+    const logger = makeSpyLogger();
+    const parentCtx = createRootContext({
+      params: {},
+      workflowFile: PARENT_WORKFLOW,
+      engine: null,
+      auditLogger: logger,
+    });
+
+    const step = {
+      id: 'run-sub',
+      session: 'new' as const,
+      workflow: 'test/fixtures/sub-workflow-child.yaml',
+    };
+
+    await executeSubWorkflowStep(step, parentCtx);
+
+    // Find the sub-workflow step_end (has no shell-specific fields like exit_code or command)
+    const stepEnd = logger.events.filter(e => e.type === 'step_end').pop();
+    expect(stepEnd).toBeTruthy();
+    expect(stepEnd!.data.outcome).toBe('success');
+    expect(typeof stepEnd!.data.duration_ms).toBe('number');
+    // End events should not have context snapshot
+    expect(stepEnd!.data.context).toBeUndefined();
+  });
+
+  it('emits sub_workflow_start and sub_workflow_end around child execution', async () => {
+    const logger = makeSpyLogger();
+    const parentCtx = createRootContext({
+      params: {},
+      workflowFile: PARENT_WORKFLOW,
+      engine: null,
+      auditLogger: logger,
+    });
+
+    const step = {
+      id: 'run-sub',
+      session: 'new' as const,
+      workflow: 'test/fixtures/sub-workflow-child.yaml',
+    };
+
+    await executeSubWorkflowStep(step, parentCtx);
+
+    const subStarts = logger.events.filter(e => e.type === 'sub_workflow_start');
+    const subEnds = logger.events.filter(e => e.type === 'sub_workflow_end');
+    expect(subStarts.length).toBe(1);
+    expect(subEnds.length).toBe(1);
+
+    // sub_workflow_start includes context snapshot
+    expect(subStarts[0]!.data.context).toBeDefined();
+
+    // sub_workflow_end includes outcome and duration, no context
+    expect(subEnds[0]!.data.outcome).toBe('success');
+    expect(typeof subEnds[0]!.data.duration_ms).toBe('number');
+    expect(subEnds[0]!.data.context).toBeUndefined();
+  });
+
+  it('sub_workflow_start uses child context nesting prefix', async () => {
+    const logger = makeSpyLogger();
+    const parentCtx = createRootContext({
+      params: {},
+      workflowFile: PARENT_WORKFLOW,
+      engine: null,
+      auditLogger: logger,
+    });
+
+    const step = {
+      id: 'run-sub',
+      session: 'new' as const,
+      workflow: 'test/fixtures/sub-workflow-child.yaml',
+    };
+
+    await executeSubWorkflowStep(step, parentCtx);
+
+    const subStart = logger.events.find(e => e.type === 'sub_workflow_start');
+    // Child context prefix includes the sub-workflow step and sub:workflowName
+    expect(subStart!.prefix).toContain('run-sub');
+    expect(subStart!.prefix).toContain('sub:sub-workflow-child');
+  });
+
+  it('events are in correct order: step_start, sub_workflow_start, child events, sub_workflow_end, step_end', async () => {
+    const logger = makeSpyLogger();
+    const parentCtx = createRootContext({
+      params: {},
+      workflowFile: PARENT_WORKFLOW,
+      engine: null,
+      auditLogger: logger,
+    });
+
+    const step = {
+      id: 'run-sub',
+      session: 'new' as const,
+      workflow: 'test/fixtures/sub-workflow-child.yaml',
+    };
+
+    await executeSubWorkflowStep(step, parentCtx);
+
+    const types = logger.events.map(e => e.type);
+    // First event should be step_start (parent-level)
+    expect(types[0]).toBe('step_start');
+    // Second should be sub_workflow_start
+    expect(types[1]).toBe('sub_workflow_start');
+    // Last should be step_end (parent-level)
+    expect(types[types.length - 1]).toBe('step_end');
+    // Second-to-last should be sub_workflow_end
+    expect(types[types.length - 2]).toBe('sub_workflow_end');
+  });
+
+  it('includes subWorkflowName in nesting prefix for child step events', async () => {
+    const logger = makeSpyLogger();
+    const parentCtx = createRootContext({
+      params: {},
+      workflowFile: PARENT_WORKFLOW,
+      engine: null,
+      auditLogger: logger,
+    });
+
+    const step = {
+      id: 'run-sub',
+      session: 'new' as const,
+      workflow: 'test/fixtures/sub-workflow-child.yaml',
+    };
+
+    await executeSubWorkflowStep(step, parentCtx);
+
+    // Find child step events (step_start/step_end for child-echo)
+    const childStepStart = logger.events.find(e =>
+      e.type === 'step_start' && e.data.command !== undefined
+    );
+    // Child step prefix should include run-sub, sub:sub-workflow-child, child-echo
+    expect(childStepStart).toBeTruthy();
+    expect(childStepStart!.prefix).toContain('run-sub');
+    expect(childStepStart!.prefix).toContain('sub:sub-workflow-child');
+    expect(childStepStart!.prefix).toContain('child-echo');
   });
 });
