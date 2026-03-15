@@ -125,7 +125,7 @@ export function interpolateParams(
 
   // Third pass: replace sentinels with actual file contents
   for (let i = 0; i < fileContents.length; i++) {
-    result = result.replace(`\0FILE_SENTINEL_${i}\0`, fileContents[i]!);
+    result = result.replace(`\0FILE_SENTINEL_${i}\0`, fileContents[i] ?? '');
   }
 
   return result;

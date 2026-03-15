@@ -31,7 +31,7 @@ export const LoopSchema = z
       });
     }
 
-    if (!hasMax && !hasOver && !hasAs) {
+    if (!(hasMax || hasOver || hasAs)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'Loop requires "max" or both "over" and "as"',

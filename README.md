@@ -20,6 +20,7 @@ There are many YAML-based workflow engines (Argo, Kestra, Step Functions) and CL
 - **Flow control**: `continue_on_failure`, `skip_if: previous_success`, `break_if: success|failure`
 - **Per-step model override**: specify which model an agent step should use (`model` field)
 - **State and resumption**: `baton-state.json` persists after each step for resume on interruption
+- **Audit logging**: structured log of every execution event (step start/end, iterations, sub-workflows) for post-failure troubleshooting
 - **Engines**: pluggable lifecycle hooks for prompt enrichment, step validation, and state management
 
 ## Install
@@ -82,6 +83,18 @@ Each agent step declares a session strategy:
 ### State and resumption
 
 Baton writes `baton-state.json` after each step. If a workflow is interrupted, `baton resume` picks up from where it left off, including persisted session IDs, captured variables, and parameters. State is recursive -- nested loops and sub-workflows track their own position.
+
+### Audit logging
+
+Every workflow run produces a structured audit log at `~/.baton/projects/{encoded-cwd}/logs/{workflow-name}-{timestamp}.log`. Each line is a hybrid format: ISO-8601 timestamp, nesting prefix, event type, then a JSON payload.
+
+```
+2026-03-15T18:30:00Z [validate] step_start {"command":"npm test","context":{...}}
+2026-03-15T18:30:02Z [validate] step_end {"outcome":"success","duration_ms":2000,"exit_code":0,"stderr":""}
+2026-03-15T18:30:02Z [task-loop:0, implement] step_start {"prompt":"Implement tasks/1.md",...}
+```
+
+The nesting prefix shows exactly where in the execution you are -- `[loop:iteration, step]` for loops, `[step, sub:workflow-name, child]` for sub-workflows. Paired start/end events capture context snapshots, timing, outcomes, and step-type-specific data (interpolated commands, prompts, session IDs, exit codes, stderr). Log files are never automatically deleted.
 
 ### Engines
 
@@ -179,6 +192,7 @@ src/
   context.ts            # ExecutionContext, nesting, sub-workflow contexts
   state.ts              # State file read/write/delete
   runner.ts             # Top-level step dispatch loop
+  audit.ts              # AuditLogger, buildPrefix, log file management
   executors/
     agent.ts            # Agent step executor (headless + interactive)
     shell.ts            # Shell step executor (with capture)
