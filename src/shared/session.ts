@@ -7,7 +7,10 @@ import type { ExecutionContext } from '../context.ts';
  */
 export function resolveInheritSession(context: ExecutionContext): string {
   if (!context.parentContext) {
-    throw new Error('session "inherit" is not allowed in a top-level workflow');
+    console.warn(
+      'baton: session "inherit" has no parent workflow — using new session',
+    );
+    return '';
   }
 
   // Walk up to find a context with a different workflowFile

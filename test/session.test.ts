@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import {
   createRootContext,
   createSubWorkflowContext,
@@ -65,16 +65,20 @@ describe('session: inherit', () => {
     );
   });
 
-  it('errors when used in top-level workflow (no parent context)', () => {
+  it('warns and returns empty string when used in top-level workflow (no parent context)', () => {
     const topCtx = createRootContext({
       params: {},
       workflowFile: '/top.yaml',
       engine: null,
     });
 
-    expect(() => resolveInheritSession(topCtx)).toThrow(
-      /not allowed in a top-level workflow/i,
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    const result = resolveInheritSession(topCtx);
+    expect(result).toBe('');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('no parent workflow'),
     );
+    warnSpy.mockRestore();
   });
 
   it('walks through nested sub-workflows to find session', () => {
