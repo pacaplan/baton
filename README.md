@@ -20,6 +20,7 @@ There are many YAML-based workflow engines (Argo, Kestra, Step Functions) and CL
 - **Flow control**: `continue_on_failure`, `skip_if: previous_success`, `break_if: success|failure`
 - **Per-step model override**: specify which model an agent step should use (`model` field)
 - **State and resumption**: `baton-state.json` persists after each step for resume on interruption
+- **Audit logging**: structured log of every execution event (step start/end, iterations, sub-workflows) for post-failure troubleshooting
 - **Engines**: pluggable lifecycle hooks for prompt enrichment, step validation, and state management
 
 ## Install
@@ -179,6 +180,7 @@ src/
   context.ts            # ExecutionContext, nesting, sub-workflow contexts
   state.ts              # State file read/write/delete
   runner.ts             # Top-level step dispatch loop
+  audit.ts              # AuditLogger, buildPrefix, log file management
   executors/
     agent.ts            # Agent step executor (headless + interactive)
     shell.ts            # Shell step executor (with capture)

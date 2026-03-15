@@ -3,9 +3,7 @@
 ## Purpose
 
 Defines how shell steps can capture their stdout into named variables for use in subsequent steps via template interpolation.
-
 ## Requirements
-
 ### Requirement: Shell stdout capture
 
 A shell step with a `capture` field SHALL capture its stdout into a named variable. The captured value is available to subsequent steps via `{{var_name}}` interpolation. Output SHALL be both captured and displayed to the terminal (tee behavior).
@@ -45,3 +43,12 @@ Captured variables SHALL be available to all subsequent steps within the same sc
 #### Scenario: Variable does not leak from sub-workflow to parent
 - **WHEN** a sub-workflow captures `internal_var` and the parent step after the sub-workflow references `{{internal_var}}`
 - **THEN** baton fails with an undefined variable error
+
+### Requirement: Shell stderr capture
+
+Shell steps SHALL pipe stderr in addition to stdout. Stderr SHALL be teed to the terminal in real-time and stored for the audit log. See `stderr-capture` spec for full requirements.
+
+#### Scenario: Stderr piped alongside stdout
+- **WHEN** a shell step with `capture: output` executes and produces both stdout and stderr
+- **THEN** stdout is captured into the variable and teed, stderr is separately teed and stored for the audit log
+

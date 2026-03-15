@@ -9,7 +9,7 @@ steps:
     steps:
       - id: run-gauntlet
         mode: shell
-        command: agent-gauntlet run --enable-review task-compliance
+        command: agent-gauntlet run --report --enable-review task-compliance
         capture: gauntlet_output
         continue_on_failure: true
         break_if: success

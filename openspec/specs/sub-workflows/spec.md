@@ -52,7 +52,7 @@ A step with `session: inherit` SHALL resume the most recent session from the par
 
 #### Scenario: Inherit in a top-level workflow
 - **WHEN** a step in a top-level workflow (not a sub-workflow) has `session: inherit`
-- **THEN** baton fails at validation time with a validation error (load time for the parent workflow, execution time for lazily loaded sub-workflows)
+- **THEN** baton logs a warning and falls back to a new session (the agent executor's existing try/catch ensures this is non-fatal)
 
 ### Requirement: Session resume scoping
 

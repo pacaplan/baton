@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Subprocess } from 'bun';
+import { buildPrefix } from '../audit.ts';
 import type { ExecutionContext } from '../context.ts';
 import type { Step } from '../schema.ts';
 import { interpolate } from '../shared/interpolation.ts';
@@ -33,9 +34,47 @@ export async function executeAgentStep(
 ): Promise<StepOutcome> {
   if (!step.prompt) return 'failed';
 
-  const prompt = buildPrompt(step, context);
-  const args = buildArgs(step, prompt, context);
+  const prefix = buildPrefix(context.nestingPath, step.id);
+  const startTime = Date.now();
+  const mode = step.mode ?? 'interactive';
 
+  let prompt: string;
+  let enrichment: string | undefined;
+  let sessionId: string | undefined;
+
+  try {
+    const built = buildPrompt(step, context);
+    prompt = built.prompt;
+    enrichment = built.enrichment;
+    sessionId = resolveSessionId(step, context);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    emitAgentStartEnd(context, prefix, startTime, mode, step, {
+      outcome: 'failed',
+      error,
+    });
+    return 'failed';
+  }
+
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_start',
+    data: {
+      prompt,
+      mode,
+      session_strategy: step.session ?? 'new',
+      resolved_session_id: sessionId,
+      model: step.model,
+      enrichment,
+      context: {
+        params: { ...context.params },
+        capturedVariables: { ...context.capturedVariables },
+      },
+    },
+  });
+
+  const args = buildArgsFromResolved(step, prompt, sessionId);
   logStepMode(step);
   cleanSignalFile();
 
@@ -47,40 +86,95 @@ export async function executeAgentStep(
   });
 
   let outcome: StepOutcome;
-  if (step.mode !== 'headless') {
-    outcome = await waitForSignalOrExit(proc);
+  let exitCode: number;
+  if (step.mode === 'headless') {
+    const headlessResult = await runHeadlessWithSigint(proc);
+    outcome = headlessResult.outcome;
+    exitCode = headlessResult.exitCode;
   } else {
-    outcome = await runHeadlessWithSigint(proc);
+    const interactiveResult = await waitForSignalOrExit(proc);
+    outcome = interactiveResult.outcome;
+    exitCode = interactiveResult.exitCode;
   }
 
-  discoverAndStoreSession(step, context, spawnTime);
+  const discoveredSessionId = discoverAndStoreSession(step, context, spawnTime);
+
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_end',
+    data: {
+      exit_code: exitCode,
+      discovered_session_id: discoveredSessionId,
+      outcome,
+      duration_ms: Date.now() - startTime,
+    },
+  });
+
   return outcome;
 }
 
+/** Emit paired step_start/step_end for early failures (prompt build, etc). */
+function emitAgentStartEnd(
+  context: ExecutionContext,
+  prefix: string,
+  startTime: number,
+  mode: string,
+  step: Step,
+  result: { outcome: StepOutcome; error: string },
+): void {
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_start',
+    data: {
+      mode,
+      session_strategy: step.session ?? 'new',
+      context: {
+        params: { ...context.params },
+        capturedVariables: { ...context.capturedVariables },
+      },
+    },
+  });
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_end',
+    data: {
+      outcome: result.outcome,
+      error: result.error,
+      duration_ms: Date.now() - startTime,
+    },
+  });
+}
+
 /** Build the final prompt with interpolation and engine enrichment. */
-function buildPrompt(step: Step, context: ExecutionContext): string {
+function buildPrompt(
+  step: Step,
+  context: ExecutionContext,
+): { prompt: string; enrichment: string | undefined } {
   let prompt = interpolate(step.prompt ?? '', context);
+  let enrichment: string | undefined;
 
   if (context.engine?.enrichPrompt) {
-    const enrichment = context.engine.enrichPrompt(step.id, context.params);
-    if (enrichment) {
+    const result = context.engine.enrichPrompt(step.id, context.params);
+    if (result) {
+      enrichment = result;
       prompt = `${prompt}\n\n${enrichment}`;
     }
   }
 
-  return prompt;
+  return { prompt, enrichment };
 }
 
-/** Build the claude invocation args. */
-function buildArgs(
+/** Build the claude invocation args from pre-resolved values. */
+function buildArgsFromResolved(
   step: Step,
   prompt: string,
-  context: ExecutionContext,
+  sessionId: string | undefined,
 ): string[] {
   const args: string[] = ['claude'];
 
-  // Session resolution
-  const sessionId = resolveSessionId(step, context);
   if (sessionId) {
     args.push('--resume', sessionId);
   }
@@ -135,7 +229,9 @@ function logStepMode(step: Step): void {
  * Run a headless subprocess with SIGINT handling.
  * Registers a handler before spawn, removes it after exit.
  */
-async function runHeadlessWithSigint(proc: Subprocess): Promise<StepOutcome> {
+async function runHeadlessWithSigint(
+  proc: Subprocess,
+): Promise<{ outcome: StepOutcome; exitCode: number }> {
   const sigintHandler = () => {
     proc.kill();
   };
@@ -144,36 +240,47 @@ async function runHeadlessWithSigint(proc: Subprocess): Promise<StepOutcome> {
 
   try {
     const exitCode = await proc.exited;
-    return exitCode === 0 ? 'success' : 'failed';
+    return { outcome: exitCode === 0 ? 'success' : 'failed', exitCode };
   } finally {
     process.removeListener('SIGINT', sigintHandler);
   }
 }
 
+/** Read the signal file action, defaulting to 'continue' on parse failure. */
+function readSignalAction(): string {
+  try {
+    const raw = readFileSync(SIGNAL_FILE, 'utf-8').trim();
+    const signal = JSON.parse(raw);
+    return signal.action ?? 'continue';
+  } catch {
+    // Malformed signal -- treat as continue
+    return 'continue';
+  }
+}
+
 /** Interactive mode: poll .baton-signal file, or wait for process exit. */
-async function waitForSignalOrExit(proc: Subprocess): Promise<StepOutcome> {
+async function waitForSignalOrExit(
+  proc: Subprocess,
+): Promise<{ outcome: StepOutcome; exitCode: number }> {
   return new Promise((resolve) => {
     const interval = setInterval(() => {
       if (existsSync(SIGNAL_FILE)) {
         clearInterval(interval);
-        let action = 'continue';
-        try {
-          const raw = readFileSync(SIGNAL_FILE, 'utf-8').trim();
-          const signal = JSON.parse(raw);
-          action = signal.action ?? 'continue';
-        } catch {
-          // Malformed signal -- treat as continue
-        }
+        const action = readSignalAction();
         cleanSignalFile();
         proc.kill('SIGTERM');
-        resolve(action === 'continue' ? 'success' : 'aborted');
+        // Signal-based exit: use 0 for continue, 1 for abort
+        resolve({
+          outcome: action === 'continue' ? 'success' : 'aborted',
+          exitCode: action === 'continue' ? 0 : 1,
+        });
       }
     }, 500);
 
-    proc.exited.then(() => {
+    proc.exited.then((exitCode) => {
       clearInterval(interval);
       cleanSignalFile();
-      resolve('aborted');
+      resolve({ outcome: 'aborted', exitCode });
     });
   });
 }
@@ -208,17 +315,18 @@ function findConversationId(
   return bestFile.replace('.jsonl', '');
 }
 
-/** Discover conversation ID and store in context. */
+/** Discover conversation ID and store in context. Returns discovered ID or undefined. */
 function discoverAndStoreSession(
   step: Step,
   context: ExecutionContext,
   spawnTime: number,
-): void {
+): string | undefined {
   const conversationId = findConversationId(process.cwd(), spawnTime);
   if (conversationId) {
     context.sessionIds[step.id] = conversationId;
     console.log(`  session: ${conversationId}`);
   }
+  return conversationId;
 }
 
 /**
