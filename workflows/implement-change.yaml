@@ -5,6 +5,8 @@ agent: claude-code
 params:
   - name: change_name
     required: true
+  - name: task_files
+    required: true
 
 steps:
   - id: implement-tasks

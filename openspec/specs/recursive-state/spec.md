@@ -43,8 +43,8 @@ Captured variables SHALL be persisted in the state file alongside session IDs. T
 - **THEN** baton resumes at iteration 3, skipping iterations 1 and 2
 
 #### Scenario: Resume into a sub-workflow
-- **WHEN** the state file records position inside a sub-workflow at step 2 of 3
-- **THEN** baton resumes inside the sub-workflow at step 2, within the parent's context
+- **WHEN** the state file records position inside a sub-workflow with step 2 of 3 as the last completed step
+- **THEN** baton resumes inside the sub-workflow at step 3, within the parent's context
 
 #### Scenario: Resume with stale nested state
 - **WHEN** the sub-workflow file has changed since the state was written and the recorded step ID no longer exists

@@ -3,6 +3,7 @@ import type { ExecutionContext } from '../context.ts';
 import { createSubWorkflowContext } from '../context.ts';
 import { loadWorkflow } from '../loader.ts';
 import type { Step, Workflow } from '../schema.ts';
+import { shouldSkip } from '../shared/flow-control.ts';
 import { interpolate } from '../shared/interpolation.ts';
 import { executeAgentStep } from './agent.ts';
 import { executeLoopStep } from './loop.ts';
@@ -52,6 +53,10 @@ export async function executeSubWorkflowStep(
 
   // Execute each step in the sub-workflow
   for (const childStep of workflow.steps) {
+    if (shouldSkip(childStep, childContext)) {
+      continue;
+    }
+
     const outcome = await dispatchSubWorkflowChild(childStep, childContext);
 
     childContext.lastStepOutcome = outcome;
@@ -140,6 +145,10 @@ async function executeGroupInSubWorkflow(
   context: ExecutionContext,
 ): Promise<StepOutcome> {
   for (const childStep of steps) {
+    if (shouldSkip(childStep, context)) {
+      continue;
+    }
+
     const outcome = await dispatchSubWorkflowChild(childStep, context);
     context.lastStepOutcome = outcome;
     if (outcome === 'failed' && !childStep.continue_on_failure) {

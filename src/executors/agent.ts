@@ -184,7 +184,7 @@ function findConversationId(
   cwd: string,
   startTime: number,
 ): string | undefined {
-  const encodedCwd = resolve(cwd).replace(/[/.]/g, '-');
+  const encodedCwd = resolve(cwd).replace(/[/._]/g, '-');
   const projectDir = join(homedir(), '.claude', 'projects', encodedCwd);
 
   if (!existsSync(projectDir)) return undefined;

@@ -67,7 +67,8 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
     )
     .refine(
       (step) => {
-        if (step.capture && step.mode !== 'shell') return false;
+        if (step.capture && step.mode !== 'shell' && !step.command)
+          return false;
         return true;
       },
       { message: '"capture" is only allowed on shell steps' },
@@ -75,7 +76,7 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
     .refine(
       (step) => {
         if (step.model && step.mode === 'shell') return false;
-        if (step.model && !step.mode) return false;
+        if (step.model && !step.mode && !step.prompt) return false;
         return true;
       },
       { message: '"model" is only allowed on agent steps' },

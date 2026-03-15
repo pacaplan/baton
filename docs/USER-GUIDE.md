@@ -191,7 +191,7 @@ Repeat a group of steps up to N times:
 
     - id: fix
       mode: headless
-      session: resume
+      session: new
       prompt: |
         The gauntlet found issues:
         {{gauntlet_output}}

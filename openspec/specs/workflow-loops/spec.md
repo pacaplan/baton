@@ -70,7 +70,7 @@ A step within a loop body with `break_if: success` or `break_if: failure` SHALL 
 
 Within a loop iteration, all agent steps SHALL share one session chain. `session: new` (the default) creates a fresh session on the first agent step of each iteration. `session: resume` SHALL resume the most recent session within the current iteration.
 
-```
+```text
 OUTER LOOP: implement-tasks (iterating over task files)
 ═══════════════════════════════════════════════════════════════
 

@@ -89,7 +89,7 @@ A step can invoke another workflow YAML file:
 
 ### Path resolution
 
-The `workflow` path is resolved relative to the parent workflow's directory. If the parent workflow is at `workflows/flokay.yaml` and a step references `workflows/implement-task.yaml`, baton resolves it relative to the directory containing `flokay.yaml`.
+The `workflow` path is resolved relative to the parent workflow's directory. If the parent workflow is at `workflows/flokay.yaml` and a step references `implement-task.yaml`, baton resolves it relative to the directory containing `flokay.yaml`.
 
 ### Parameter passing
 
@@ -256,7 +256,7 @@ The session behavior chains naturally:
 
 **Inner loop (verify-fix), single task:**
 
-```
+```text
 Iteration 1:
   gauntlet     -> shell (no session)
   fix          -> inherits implement's session -> S1'
@@ -272,7 +272,7 @@ Iteration 3 (if still failing):
 
 **Outer loop (per task), across tasks:**
 
-```
+```text
 Task 1:
   implement    -> session S1 (new)
   [verify-fix loop uses S1, S1', S1'']
