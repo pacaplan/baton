@@ -362,7 +362,7 @@ Engines are optional plugins that hook into baton's execution lifecycle. They en
 
 The built-in openspec engine integrates with the OpenSpec CLI. It:
 
-1. **Enriches prompts** -- Before each artifact step, calls `openspec instructions` to get the template, output path, and dependencies, and prepends them to the prompt in an `<artifact_context>` block.
+1. **Enriches prompts** -- Before each artifact step, calls `openspec instructions` to get the template, output path, and dependencies, and appends them to the prompt in an `<artifact_context>` block.
 
 2. **Validates steps** -- After each artifact step, calls `openspec status` to check that the artifact was created. If validation fails, baton offers you the choice to resume the session interactively or exit.
 

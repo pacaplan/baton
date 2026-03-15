@@ -12,8 +12,8 @@ function mockSyncResult(
   const encoder = new TextEncoder();
   return {
     exitCode,
-    stdout: new Buffer(encoder.encode(stdout)),
-    stderr: new Buffer(encoder.encode(stderr)),
+    stdout: Buffer.from(encoder.encode(stdout)),
+    stderr: Buffer.from(encoder.encode(stderr)),
     success: exitCode === 0,
     pid: 99999,
     resourceUsage: undefined,

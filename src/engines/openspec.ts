@@ -68,6 +68,20 @@ function loadArtifactIds(changeName: string): Set<string> {
   return new Set(status.artifacts.map((a) => a.id));
 }
 
+function tryLoadArtifactIds(changeName: string): Set<string> | null {
+  try {
+    return loadArtifactIds(changeName);
+  } catch (error) {
+    // Change doesn't exist yet — skip validation (a workflow step may create it)
+    if (error instanceof Error && /ENOENT|not found/i.test(error.message)) {
+      return null;
+    }
+    throw new Error(
+      `Failed to load OpenSpec artifacts for ${changeName}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 function resolveTemplatePath(data: OpenSpecInstructionsOutput): string {
   return join(
     data.changeDir,
@@ -136,12 +150,8 @@ export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
 
     validateWorkflow(workflow: Workflow, params: Record<string, string>): void {
       const changeName = getChangeName(changeParam, params);
-      try {
-        artifactIds = loadArtifactIds(changeName);
-      } catch {
-        // Change doesn't exist yet — skip validation (a workflow step may create it)
-        return;
-      }
+      artifactIds = tryLoadArtifactIds(changeName);
+      if (!artifactIds) return;
 
       const stepIds = new Set(workflow.steps.map((s) => s.id));
       const unmatched = [...artifactIds].filter((id) => !stepIds.has(id));
