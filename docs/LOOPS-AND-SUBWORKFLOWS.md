@@ -1,74 +1,42 @@
-# Loops and Sub-Workflows: Proposal Draft
+# Loops and Sub-Workflows
 
-> Temporary working document. Will be replaced by an OpenSpec proposal once we begin the change.
+Baton supports loops (counted and for-each), sub-workflow invocation, output capture, and flow control primitives. These features enable complex orchestration patterns like iterating over task files with verify-fix retry loops.
 
-## Motivation
+## Loops
 
-Baton currently executes workflows as a linear sequence of steps. This works well for the flokay change lifecycle (propose, spec, design, implement, verify, finalize) where each step runs once in order.
+A loop step repeats its child steps according to a loop configuration. Two flavors are supported.
 
-But the implementation and verification phases are inherently iterative:
+### Counted loop
 
-1. **Task loop**: For each task in a change, run an implement-and-verify cycle.
-2. **Verify-fix loop**: After implementation, run the gauntlet. If it fails, feed the failures back to the same session that implemented the code (it has all the context), then re-run the gauntlet. Repeat up to 3 times.
+Repeat up to N times:
 
-Today, these loops live inside agent skills (`flokay:implement-task` and `gauntlet-run`). The agent orchestrates its own retry logic, which violates baton's core thesis: **agents are good at execution, bad at orchestration**. Moving these loops into baton makes them deterministic, visible, and debuggable.
-
-For context see:
-/Users/pcaplan/paul/flokay/skills/implement-task/SKILL.md
-/Users/pcaplan/paul/agent-gauntlet/skills/gauntlet-run/SKILL.md
-
-## Target Architecture
-
-```
-┌─ OUTER LOOP (per task) ──────────────────────────────────────────┐
-│                                                                   │
-│  for each task_file in tasks/*.task.md:                           │
-│                                                                   │
-│    ┌─ implement (headless, new session) ──────────────────────┐  │
-│    │  "Read the task file and implement with TDD"              │  │
-│    └───────────────────────────────────────────────────────────┘  │
-│                          │                                        │
-│                          ▼                                        │
-│    ┌─ INNER LOOP (verify-fix, max 3) ────────────────────────┐  │
-│    │                                                          │  │
-│    │   ┌─ gauntlet (shell) ──────────────┐                   │  │
-│    │   │  agent-gauntlet run             │──── pass? ──→ BREAK│  │
-│    │   └─────────────────────────────────┘         │         │  │
-│    │                                          fail │         │  │
-│    │                                               ▼         │  │
-│    │   ┌─ fix (headless, RESUME implement) ──────┐          │  │
-│    │   │  "Here are the failures, fix them"       │          │  │
-│    │   └──────────────────────────────────────────┘          │  │
-│    │                    │                                     │  │
-│    │                    └──────── loop back ─────────────────┘  │
-│    └──────────────────────────────────────────────────────────┘  │
-│                                                                   │
-└───────────────────────────────────────────────────────────────────┘
-```
-
-The critical property: `fix` resumes the `implement` session. The agent that wrote the code has all the context needed to fix gauntlet failures. Across loop iterations, sessions chain naturally: `implement → fix₁ → fix₂ → fix₃`, accumulating knowledge with each attempt.
-
-When the outer loop moves to the next task, `implement` starts a fresh session — clean slate for a new task.
-
-## New Primitives
-
-Six new capabilities added to the workflow schema:
-
-### 1. `loop` — Repeat a group of steps
-
-Two flavors:
-
-**Counted loop (repeat up to N times):**
 ```yaml
 - id: verify-fix
-  loop: { max: 3 }
+  loop:
+    max: 3
   steps:
     - id: gauntlet
       mode: shell
       command: agent-gauntlet run
+      capture: gauntlet_output
+      continue_on_failure: true
+      break_if: success
+
+    - id: fix
+      mode: headless
+      session: resume
+      prompt: |
+        Fix these issues:
+        {{gauntlet_output}}
+      skip_if: previous_success
 ```
 
-**For-each loop (iterate over a list):**
+When the loop reaches `max` iterations without `break_if` triggering, the loop outcome is `exhausted`, which fails the workflow. Use `break_if` to define the success condition.
+
+### For-each loop
+
+Iterate over files matching a glob pattern:
+
 ```yaml
 - id: per-task
   loop:
@@ -77,61 +45,123 @@ Two flavors:
   steps:
     - id: implement
       mode: headless
+      session: new
       prompt: "Implement {{task_file}}"
 ```
 
-The `over` field accepts a glob pattern, expanded at runtime. Each match is bound to the variable named in `as`, available via `{{task_file}}` interpolation in nested steps.
+- `over` -- glob pattern, expanded at runtime. Supports `{{param}}` interpolation.
+- `as` -- variable name. Each match is bound to this name, accessible via `{{task_file}}`.
 
-### 2. `steps` (nested) — Inline step groups
+Matches are sorted alphabetically. If no files match, the loop succeeds immediately with no iterations.
 
-Steps can contain child steps, creating logical groups. Required for loops (the loop body is a `steps` array) but also useful for organizing workflows without control flow.
+### Loop schema
 
 ```yaml
-- id: verify-fix
-  loop: { max: 3 }
-  steps:    # <-- nested steps
-    - id: gauntlet
-      mode: shell
-      command: agent-gauntlet run
-    - id: fix
-      mode: headless
-      session: resume
-      prompt: "Fix these: {{gauntlet_output}}"
+loop:
+  max: N              # counted loop: repeat up to N times
+  # -- or --
+  over: "glob/pattern" # for-each loop: iterate over matches
+  as: variable_name    # variable name for each match
 ```
 
-Nested steps inherit the parent's parameter scope and have access to captured variables from sibling steps.
+A loop requires either `max` or both `over` and `as`.
 
-### 3. `workflow` — Sub-workflow invocation
+### Iteration context
 
-A step can invoke another workflow file instead of running a command or agent directly:
+Each loop iteration gets its own execution context:
+
+- Fresh `sessionIds` and `capturedVariables` (not inherited from previous iterations)
+- Inherits `params` from parent, plus any loop variable (`as`)
+- `lastStepOutcome` resets each iteration
+
+This means `session: resume` inside a loop body resumes from a step within the *same iteration*, not from a previous iteration. To chain sessions across iterations, store the session ID in a captured variable.
+
+## Sub-Workflows
+
+A step can invoke another workflow YAML file:
 
 ```yaml
-- id: verify
-  workflow: workflows/verify-fix.yaml
+- id: implement-single-task
+  workflow: workflows/implement-task.yaml
   params:
     task_file: "{{task_file}}"
 ```
 
-Sub-workflows execute in the same process, sharing session state with the parent. Parameters are passed explicitly via the `params` map. This enables composition — complex patterns are extracted into reusable workflow files.
+### Path resolution
 
-### 4. `capture` — Capture shell stdout into a variable
+The `workflow` path is resolved relative to the parent workflow's directory. If the parent workflow is at `workflows/flokay.yaml` and a step references `workflows/implement-task.yaml`, baton resolves it relative to the directory containing `flokay.yaml`.
 
-Shell steps can capture their stdout into a named variable, available to subsequent steps:
+### Parameter passing
+
+Parameters are passed explicitly via the `params` map. The sub-workflow only sees the parameters listed in `params` -- it does not inherit the parent's full parameter set. Parameter values support `{{variable}}` interpolation.
+
+### Execution model
+
+Sub-workflows:
+
+- Execute in the same process (no subprocess)
+- Get their own `ExecutionContext` (session IDs, captured variables, last step outcome)
+- Share the parent's engine reference
+- Can nest arbitrarily deep
+- Are loaded lazily at execution time
+
+### session: inherit
+
+Inside a sub-workflow, `session: inherit` crosses the sub-workflow boundary to find the parent's most recent session:
+
+```yaml
+# In run-gauntlet.yaml (a sub-workflow)
+- id: fix-violations
+  mode: headless
+  session: inherit
+  prompt: "Fix the gauntlet violations..."
+```
+
+This walks up the parent context chain until it finds a context with a different `workflowFile`, then returns that context's most recent session ID. It enables the pattern where a sub-workflow needs to resume the agent session that produced the code being verified.
+
+## Flow Control
+
+### continue_on_failure
 
 ```yaml
 - id: gauntlet
   mode: shell
   command: agent-gauntlet run
-  capture: gauntlet_output
+  continue_on_failure: true
 ```
 
-After this step, `{{gauntlet_output}}` expands to the captured stdout in any subsequent step's prompt or command. Output is both captured and displayed to the terminal (tee behavior).
+Normally a failed step stops the workflow. With `continue_on_failure: true`, the workflow continues to the next step. The step's outcome is tracked and available for conditions.
 
-Implementation: the runner pipes stdout through a buffer while also streaming to the terminal. The captured content is stored in the run state alongside session IDs.
+### skip_if
 
-### 5. `continue_on_failure` — Don't halt on step failure
+```yaml
+- id: fix
+  mode: headless
+  skip_if: previous_success
+  prompt: "Fix the issues..."
+```
 
-By default, a failed step stops the workflow. `continue_on_failure: true` allows the workflow to proceed, which is essential for the verify-fix pattern where gauntlet failure is expected and handled by the next step.
+Skip this step if the previous step succeeded. Pairs with `continue_on_failure` to create conditional execution patterns.
+
+### break_if
+
+```yaml
+- id: gauntlet
+  mode: shell
+  command: agent-gauntlet run
+  break_if: success
+```
+
+Evaluated after the step executes. Exits the enclosing loop:
+
+- `break_if: success` -- exit loop when step succeeds (exit code 0)
+- `break_if: failure` -- exit loop when step fails (non-zero exit code)
+
+When triggered, execution continues with the next step after the loop. A loop that exits via `break_if` is considered successful.
+
+## Output Capture
+
+Shell steps can capture their stdout into a named variable:
 
 ```yaml
 - id: gauntlet
@@ -141,216 +171,113 @@ By default, a failed step stops the workflow. `continue_on_failure: true` allows
   continue_on_failure: true
 ```
 
-The step's exit code is tracked and available for conditions. The workflow only stops if the step fails *and* `continue_on_failure` is not set.
+- Output is both displayed to the terminal and stored in the variable (tee behavior)
+- Captured variables are available to subsequent steps via `{{gauntlet_output}}` interpolation
+- Variables persist in the state file for resume
+- Captured variables take precedence over params when names collide
+- Only shell steps support `capture` (schema validation rejects it on agent steps)
 
-### 6. `break_if` — Exit a loop early
+## Composed Example
 
-Controls when to break out of a loop. Applied to individual steps within a loop body:
+The flokay implement workflow demonstrates all these features working together:
 
-```yaml
-- id: gauntlet
-  mode: shell
-  command: agent-gauntlet run
-  break_if: success    # exit loop when gauntlet passes
-```
-
-Evaluated after the step executes. `break_if: success` exits the enclosing loop if the step succeeded (exit code 0). `break_if: failure` exits on non-zero. When triggered, execution continues with the next step after the loop.
-
-## What the YAML Looks Like
-
-### Single-file approach (inline nesting)
+**workflows/implement-change.yaml** -- for-each loop over task files:
 
 ```yaml
 name: implement-change
-description: "Implement all tasks with gauntlet verification"
 params:
   - name: change_name
+    required: true
 
 steps:
-  - id: per-task
+  - id: implement-tasks
     loop:
-      over: "openspec/changes/{{change_name}}/tasks/*.task.md"
+      over: task_files
       as: task_file
     steps:
-      - id: implement
-        mode: headless
-        prompt: |
-          Read the task file at {{task_file}} and implement it.
-          Write tests first, then implementation.
-
-      - id: verify-fix
-        loop: { max: 3 }
-        steps:
-          - id: gauntlet
-            mode: shell
-            command: agent-gauntlet run
-            capture: gauntlet_output
-            continue_on_failure: true
-            break_if: success
-
-          - id: fix
-            mode: headless
-            session: resume
-            prompt: |
-              The gauntlet found issues. Here are the failures:
-
-              {{gauntlet_output}}
-
-              Fix these issues.
+      - id: implement-single-task
+        workflow: workflows/implement-task.yaml
+        params:
+          task_file: "{{task_file}}"
 ```
 
-### Composed approach (sub-workflows)
+**workflows/implement-task.yaml** -- agent step then gauntlet retry:
 
-**workflows/verify-fix.yaml:**
 ```yaml
-name: verify-fix
-description: "Run gauntlet and fix failures"
+name: implement-task
+params:
+  - name: task_file
+    required: true
 
 steps:
-  - id: gauntlet
-    mode: shell
-    command: agent-gauntlet run
-    capture: gauntlet_output
-    continue_on_failure: true
-    break_if: success
-
-  - id: fix
+  - id: implement
     mode: headless
-    session: resume
-    prompt: |
-      The gauntlet found issues:
-      {{gauntlet_output}}
-      Fix them.
+    session: new
+    prompt: "Implement the task described in {{task_file}}."
+
+  - id: run-gauntlet
+    workflow: workflows/run-gauntlet.yaml
 ```
 
-**workflows/implement-change.yaml:**
+**workflows/run-gauntlet.yaml** -- counted retry loop with capture and flow control:
+
 ```yaml
-name: implement-change
-params:
-  - name: change_name
-
+name: run-gauntlet
 steps:
-  - id: per-task
+  - id: gauntlet-retry
     loop:
-      over: "openspec/changes/{{change_name}}/tasks/*.task.md"
-      as: task_file
+      max: 3
     steps:
-      - id: implement
-        mode: headless
-        prompt: "Read {{task_file}} and implement with TDD"
+      - id: run-gauntlet
+        mode: shell
+        command: agent-gauntlet run --enable-review task-compliance
+        capture: gauntlet_output
+        continue_on_failure: true
+        break_if: success
 
-      - id: verify
-        workflow: workflows/verify-fix.yaml
-        loop: { max: 3 }
+      - id: fix-violations
+        mode: headless
+        session: inherit
+        prompt: |
+          The gauntlet found violations. Fix them:
+          {{gauntlet_output}}
+        skip_if: previous_success
+        continue_on_failure: true
 ```
 
-Both approaches are valid. Inline for simple cases, sub-workflows for reusable patterns.
+The session behavior chains naturally:
+
+- `implement` starts a new session (S1)
+- `fix-violations` uses `session: inherit` to resume S1 from across the sub-workflow boundary
+- Each fix iteration builds on the previous: S1 -> fix1 -> fix2 -> fix3
+- When the outer loop moves to the next task, `implement` starts fresh (S2)
 
 ## Session Behavior Inside Loops
 
-Session management works naturally with loops because of baton's existing "resume = continue last session" semantics.
-
 **Inner loop (verify-fix), single task:**
+
 ```
 Iteration 1:
-  gauntlet   →  shell (no session)
-  fix        →  resumes implement's session → creates session S1'
+  gauntlet     -> shell (no session)
+  fix          -> inherits implement's session -> S1'
 
 Iteration 2 (if gauntlet fails again):
-  gauntlet   →  shell (no session)
-  fix        →  resumes S1' → creates S1''
+  gauntlet     -> shell (no session)
+  fix          -> resumes S1' -> S1''
 
 Iteration 3 (if still failing):
-  gauntlet   →  shell (no session)
-  fix        →  resumes S1'' → creates S1'''
+  gauntlet     -> shell (no session)
+  fix          -> resumes S1'' -> S1'''
 ```
-
-Each fix builds on the previous context. The agent accumulates knowledge: original implementation, first fix attempt, second fix attempt.
 
 **Outer loop (per task), across tasks:**
+
 ```
 Task 1:
-  implement  →  session S1 (new)
+  implement    -> session S1 (new)
   [verify-fix loop uses S1, S1', S1'']
 
 Task 2:
-  implement  →  session S2 (new)     ← fresh start
+  implement    -> session S2 (new)     <- fresh start
   [verify-fix loop uses S2, S2', S2'']
 ```
-
-`session: new` on `implement` resets for each task. Clean separation between tasks.
-
-## Loop Exhaustion
-
-When a counted loop reaches its max iterations without a `break_if` triggering, the default behavior is to **fail the workflow**. This is configurable:
-
-```yaml
-- id: verify-fix
-  loop:
-    max: 3
-    on_exhaust: fail    # default — stop the workflow
-```
-
-Other possible values (to be evaluated during implementation):
-- `continue` — skip to the next step after the loop
-- `ask` — prompt the user for a decision
-
-For the gauntlet use case, `fail` is correct: if 3 fix attempts didn't resolve the issues, human intervention is needed.
-
-## Design Influences
-
-These primitives draw from established patterns in existing workflow systems:
-
-| Primitive | Primary influence | Pattern borrowed |
-|---|---|---|
-| `loop: { max: N }` | Azure Logic Apps `Until`, Netflix Conductor `DO_WHILE` | Counted loop with max iterations |
-| `loop: { over, as }` | Kestra `ForEach`, CNCF Serverless Workflow `for:` | For-each with item binding |
-| `capture` | Argo Workflows `outputs.parameters`, Serverless Workflow `output:` | Stdout capture into named variable |
-| `break_if` | CNCF Serverless Workflow `while:` guard (inverted) | Loop exit condition |
-| `continue_on_failure` | GitHub Actions `continue-on-error` | Step failure tolerance |
-| `workflow` (sub-workflows) | Kestra `Subflow`, Serverless Workflow `run: workflow:` | Workflow composition |
-
-The specific systems most worth studying for implementation details:
-
-1. **CNCF Serverless Workflow Specification (1.0)** — The most complete declarative workflow DSL. Its `for:` / `do:` / `run: shell:` task types, `output:` capture, and JQ-based data flow are the gold standard for how these primitives should feel.
-
-2. **Kestra** — The most practical YAML-first orchestration platform. Its `ForEach`, `LoopUntil`, `If/else`, shell task types, and output variable system are directly applicable. Kestra is server-based (not CLI), but its YAML patterns are clean and battle-tested.
-
-3. **Argo Workflows** — Kubernetes-native but has excellent patterns for `withParam` dynamic loops (looping over output from a previous step), `when:` conditionals, and template composition.
-
-4. **Taskfile (go-task)** — The closest CLI-native tool. Its `for:` loops over globs and shell-output variables (`sh:`) are the most relevant for baton's local-execution model. Where Taskfile breaks down (no loop-until, no mid-pipeline capture, no conditional branching) is exactly where baton's new primitives add value.
-
-## Implementation Scope
-
-Changes required in the baton codebase:
-
-**Schema (`src/schema.ts`):**
-- New optional fields on `StepSchema`: `steps`, `workflow`, `loop`, `capture`, `continue_on_failure`, `break_if`
-- New `LoopSchema` with `max`, `over`, `as`, `on_exhaust` fields
-- Recursive step validation (steps containing steps)
-
-**Runner (`src/runner.ts`):**
-- `executeStep` becomes recursive — can handle nested steps and sub-workflows
-- New `executeLoop` function for counted and for-each loops
-- New `executeSubWorkflow` function for workflow composition
-- Output capture mechanism (tee stdout to buffer + terminal)
-- Step result tracking (exit codes, captured variables in state)
-- `break_if` evaluation after step execution
-- `continue_on_failure` handling in the step failure path
-
-**Loader (`src/loader.ts`):**
-- Extended interpolation to include captured variables: `{{gauntlet_output}}`
-- Glob expansion for `loop.over` patterns
-
-**State (`src/state.ts`):**
-- Captured variables stored alongside session IDs
-- Nested loop state tracking (current iteration, loop variables)
-
-Estimated complexity: the runner goes from ~380 lines to ~550-700 lines. The schema adds ~30 lines. The loader adds ~20 lines.
-
-### Addendum
-
-The above was written by claude based on conversation. This addendum is added by the human, Paul. I want the state tracking (baton-state.json) to be recursive. So if we're in the middle of a nested workflow inside of a nested workflow, i want the state file to capture the current state of each.
-My suggestion (but open to other ideas) is is that the "currentStep" attribute can have an id (string) and a nested (recursive) workflow json that has its own steps, etc.
-
-Also, I want the flokay workflow to have two steps: plan and implement. Each of these is its own workflow, as described in /Users/pcaplan/paul/flokay/docs/guide.md . So it will be turtles all the way down (although I'm probably not using that expression correctly).

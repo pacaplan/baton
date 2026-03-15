@@ -21,7 +21,7 @@ Add `bin/` to your PATH, or run directly with `bun src/index.ts`.
 
 ## Writing workflows
 
-A workflow is a YAML file that defines a sequence of steps. Each step either runs an agent session or a shell command.
+A workflow is a YAML file that defines a sequence of steps. Each step either runs an agent session, a shell command, a loop, or a sub-workflow.
 
 ### Minimal example
 
@@ -91,6 +91,8 @@ The agent runs non-interactively (`claude -p`). Its output streams to your termi
 
 Use headless for steps that don't need human interaction -- task generation, code review, implementation, etc.
 
+Pressing ctrl-c during a headless step kills the agent subprocess and exits baton. The state file preserves the interrupted step so you can resume later.
+
 ### Shell
 
 No agent involved. Baton runs a shell command directly. Useful for:
@@ -128,11 +130,191 @@ Starts a fresh agent session with no prior context. The agent reads what it need
   prompt: "Now write the specs based on what we discussed."
 ```
 
-Continues the previous step's session. The agent has full conversational context from earlier. Use this when:
+Continues the most recent session within the current workflow. The agent has full conversational context from earlier. Use this when:
 
 - Steps are tightly coupled (proposal -> specs uses the same conversation)
 - The agent needs to remember decisions from the prior step
 - You want continuity in an ongoing dialogue
+
+### Inherited sessions
+
+```yaml
+# Inside a sub-workflow
+- id: fix
+  mode: headless
+  session: inherit
+  prompt: "Fix the issues found by the gauntlet."
+```
+
+Crosses sub-workflow boundaries to resume the parent workflow's most recent session. Use this when:
+
+- A sub-workflow needs to continue the conversation from the parent
+- The gauntlet pattern: a sub-workflow needs to fix issues using the context of the step that created the code
+
+`session: inherit` walks the parent context chain to find the nearest session from a different workflow file.
+
+## Per-step model override
+
+Agent steps can specify which model the agent should use:
+
+```yaml
+- id: quick-check
+  mode: headless
+  model: sonnet
+  prompt: "Do a quick syntax check on the files."
+
+- id: deep-review
+  mode: headless
+  model: opus
+  prompt: "Do a thorough code review."
+```
+
+When `model` is set, baton passes `--model <value>` to the claude invocation. When absent, claude uses its default model. The `model` field is only valid on agent steps (headless or interactive), not shell steps.
+
+## Loops
+
+### Counted loops
+
+Repeat a group of steps up to N times:
+
+```yaml
+- id: verify-fix
+  loop:
+    max: 3
+  steps:
+    - id: gauntlet
+      mode: shell
+      command: agent-gauntlet run
+      capture: gauntlet_output
+      continue_on_failure: true
+      break_if: success
+
+    - id: fix
+      mode: headless
+      session: resume
+      prompt: |
+        The gauntlet found issues:
+        {{gauntlet_output}}
+        Fix them.
+      skip_if: previous_success
+```
+
+The loop runs up to 3 times. If `break_if: success` triggers on the gauntlet step (exit code 0), the loop exits early. If the loop exhausts all iterations without breaking, it fails the workflow.
+
+### For-each loops
+
+Iterate over a list of files matching a glob pattern:
+
+```yaml
+- id: per-task
+  loop:
+    over: "openspec/changes/{{change_name}}/tasks/*.task.md"
+    as: task_file
+  steps:
+    - id: implement
+      mode: headless
+      session: new
+      prompt: "Implement {{task_file}}"
+```
+
+The `over` field accepts a glob pattern, expanded at runtime. Each match is bound to the variable named in `as`, available via `{{task_file}}` interpolation in nested steps. Each iteration gets a fresh context for session IDs and captured variables.
+
+### Loop early exit with break_if
+
+`break_if` is evaluated after a step executes:
+
+- `break_if: success` -- exit the enclosing loop if the step succeeded
+- `break_if: failure` -- exit the enclosing loop if the step failed
+
+Execution continues with the next step after the loop.
+
+## Sub-workflows
+
+Complex patterns can be extracted into reusable workflow files:
+
+```yaml
+# workflows/implement-task.yaml
+name: implement-task
+params:
+  - name: task_file
+    required: true
+
+steps:
+  - id: implement
+    mode: headless
+    session: new
+    prompt: "Implement the task described in {{task_file}}."
+
+  - id: run-gauntlet
+    workflow: workflows/run-gauntlet.yaml
+```
+
+Invoke from a parent workflow:
+
+```yaml
+- id: implement-single-task
+  workflow: workflows/implement-task.yaml
+  params:
+    task_file: "{{task_file}}"
+```
+
+Sub-workflows:
+
+- Execute in the same process
+- Get their own execution context (session IDs, captured variables)
+- Receive only explicitly passed parameters
+- Can nest arbitrarily (sub-workflow calling sub-workflow)
+- Support `session: inherit` to resume a parent session
+
+## Flow control
+
+### continue_on_failure
+
+By default, a failed step stops the workflow. `continue_on_failure: true` allows the workflow to proceed:
+
+```yaml
+- id: gauntlet
+  mode: shell
+  command: agent-gauntlet run
+  continue_on_failure: true
+```
+
+Essential for the verify-fix pattern where gauntlet failure is expected and handled by the next step.
+
+### skip_if
+
+Skip a step based on the previous step's outcome:
+
+```yaml
+- id: fix
+  mode: headless
+  session: resume
+  prompt: "Fix the issues..."
+  skip_if: previous_success
+```
+
+When `skip_if: previous_success` is set, the step is skipped if the previous step succeeded. This pairs with `continue_on_failure` to create conditional execution: run the fix step only when the gauntlet fails.
+
+## Output capture
+
+Shell steps can capture their stdout into a named variable:
+
+```yaml
+- id: gauntlet
+  mode: shell
+  command: agent-gauntlet run
+  capture: gauntlet_output
+  continue_on_failure: true
+
+- id: fix
+  mode: headless
+  prompt: |
+    Fix these issues:
+    {{gauntlet_output}}
+  skip_if: previous_success
+```
+
+The captured output is both displayed to the terminal (tee behavior) and stored in the variable. Captured variables are available to all subsequent steps via `{{var_name}}` interpolation and are persisted in the state file for resume.
 
 ## Running workflows
 
@@ -228,9 +410,9 @@ const engineRegistry: Record<string, EngineConstructor> = {
 
 ## The flokay workflow
 
-The included `workflows/flokay.yaml` orchestrates the full flokay change lifecycle:
+The flokay workflow (`workflows/flokay.yaml`) orchestrates the full change lifecycle using composition. It calls into sub-workflows for the implementation phase:
 
-| Step | Mode | What it does |
+| Step | Type | What it does |
 |------|------|-------------|
 | `create` | shell | Scaffolds a new openspec change |
 | `proposal` | interactive | Collaboratively write the proposal |
@@ -238,11 +420,13 @@ The included `workflows/flokay.yaml` orchestrates the full flokay change lifecyc
 | `design` | interactive | Design the architecture |
 | `tasks` | headless | Generate implementation tasks |
 | `review` | headless (resume) | Run gauntlet review |
-| `implement` | interactive | Implement the tasks |
-| `verify` | headless (resume) | Verify implementation with gauntlet |
+| `implement` | sub-workflow | Loops over task files, implements each with gauntlet retry |
+| `verify` | headless | Verify implementation with gauntlet |
 | `archive` | headless (resume) | Archive the change, sync specs |
 | `archive-verify` | shell | Skip gauntlet for archive-only changes |
 | `finalize` | headless (resume) | Push PR, wait for CI, fix failures |
+
+The `implement` step invokes `workflows/implement-change.yaml`, which loops over task files and for each one invokes `workflows/implement-task.yaml`, which itself invokes `workflows/run-gauntlet.yaml` for the verify-fix retry loop.
 
 Run it:
 

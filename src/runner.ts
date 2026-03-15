@@ -1,15 +1,15 @@
-import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
-import type { Subprocess } from 'bun';
+import { readFileSync } from 'node:fs';
 import { createRootContext, type ExecutionContext } from './context.ts';
 import type { Engine } from './engine.ts';
+import {
+  executeAgentStep,
+  handleValidationFailure,
+} from './executors/agent.ts';
 import { executeLoopStep, type LoopResult } from './executors/loop.ts';
 import { executeShellStep } from './executors/shell.ts';
 import { executeSubWorkflowStep } from './executors/sub-workflow.ts';
 import type { Step, Workflow } from './schema.ts';
 import { shouldSkip } from './shared/flow-control.ts';
-import { interpolate } from './shared/interpolation.ts';
 import {
   computeWorkflowHash,
   deleteState,
@@ -17,8 +17,6 @@ import {
   type RunState,
   writeState,
 } from './state.ts';
-
-const SIGNAL_FILE = '.baton-signal';
 
 type StepOutcome = 'success' | 'failed' | 'aborted';
 type PromptUserFn = (message: string) => Promise<string>;
@@ -37,42 +35,6 @@ export interface RunWorkflowOptions {
   capturedVariables?: Record<string, string>;
   /** Injected for testing: prompts user and returns their choice */
   promptUser?: PromptUserFn;
-}
-
-function cleanSignalFile(): void {
-  if (existsSync(SIGNAL_FILE)) {
-    unlinkSync(SIGNAL_FILE);
-  }
-}
-
-/**
- * Find the conversation ID for a claude session spawned from the given cwd.
- */
-function findConversationId(
-  cwd: string,
-  startTime: number,
-): string | undefined {
-  const encodedCwd = resolve(cwd).replace(/[/.]/g, '-');
-  const projectDir = join(homedir(), '.claude', 'projects', encodedCwd);
-
-  if (!existsSync(projectDir)) return undefined;
-
-  let bestFile: string | undefined;
-  let bestMtime = 0;
-
-  for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
-    if (!(entry.isFile() && entry.name.endsWith('.jsonl'))) continue;
-    const fullPath = join(projectDir, entry.name);
-    const stat = Bun.file(fullPath);
-    const mtime = stat.lastModified;
-    if (mtime >= startTime && mtime > bestMtime) {
-      bestMtime = mtime;
-      bestFile = entry.name;
-    }
-  }
-
-  if (!bestFile) return undefined;
-  return bestFile.replace('.jsonl', '');
 }
 
 function validateParams(
@@ -198,7 +160,7 @@ async function executeByType(
     return { outcome: await executeShellStep(step, context) };
   }
   if (stepType === 'agent') {
-    return { outcome: await runAgentStep(step, context) };
+    return { outcome: await executeAgentStep(step, context) };
   }
   if (stepType === 'loop') {
     const loopResult = await executeLoopStep(step, context);
@@ -356,143 +318,4 @@ async function executeGroupStepInRunner(
     }
   }
   return 'success';
-}
-
-async function runAgentStep(
-  step: Step,
-  context: ExecutionContext,
-): Promise<StepOutcome> {
-  if (!step.prompt) return 'failed';
-  let prompt = interpolate(step.prompt, context);
-
-  if (context.engine?.enrichPrompt) {
-    const enrichment = context.engine.enrichPrompt(step.id, context.params);
-    if (enrichment) {
-      prompt = `${prompt}\n\n${enrichment}`;
-    }
-  }
-
-  const args: string[] = ['claude'];
-
-  if (step.session === 'resume') {
-    const previousSessionId = findPreviousSessionId(context.sessionIds);
-    if (previousSessionId) {
-      args.push('--resume', previousSessionId);
-    }
-  }
-
-  if (step.mode === 'headless') {
-    args.push('-p');
-  }
-
-  args.push(prompt);
-  console.log(`  mode: ${step.mode}`);
-
-  if (step.mode === 'interactive') {
-    console.log('  (/continue to advance, exit to stop)\n');
-  }
-
-  cleanSignalFile();
-
-  const spawnTime = Date.now();
-  const proc = Bun.spawn(args, {
-    stdin: 'inherit',
-    stdout: 'inherit',
-    stderr: 'inherit',
-  });
-
-  let outcome: StepOutcome;
-  if (step.mode === 'interactive') {
-    outcome = await waitForSignalOrExit(proc);
-  } else {
-    const exitCode = await proc.exited;
-    outcome = exitCode === 0 ? 'success' : 'failed';
-  }
-
-  const conversationId = findConversationId(process.cwd(), spawnTime);
-  if (conversationId) {
-    context.sessionIds[step.id] = conversationId;
-    console.log(`  session: ${conversationId}`);
-  }
-
-  return outcome;
-}
-
-async function waitForSignalOrExit(proc: Subprocess): Promise<StepOutcome> {
-  return new Promise((resolve) => {
-    const interval = setInterval(() => {
-      if (existsSync(SIGNAL_FILE)) {
-        clearInterval(interval);
-        let action = 'continue';
-        try {
-          const raw = readFileSync(SIGNAL_FILE, 'utf-8').trim();
-          const signal = JSON.parse(raw);
-          action = signal.action ?? 'continue';
-        } catch {
-          // Malformed signal -- treat as continue
-        }
-        cleanSignalFile();
-        proc.kill('SIGTERM');
-        resolve(action === 'continue' ? 'success' : 'aborted');
-      }
-    }, 500);
-
-    proc.exited.then(() => {
-      clearInterval(interval);
-      cleanSignalFile();
-      resolve('aborted');
-    });
-  });
-}
-
-function findPreviousSessionId(
-  sessionIds: Record<string, string>,
-): string | undefined {
-  const stepIds = Object.keys(sessionIds);
-  if (stepIds.length === 0) return undefined;
-  const lastKey = stepIds[stepIds.length - 1];
-  return lastKey ? sessionIds[lastKey] : undefined;
-}
-
-async function handleValidationFailure(
-  step: Step,
-  context: ExecutionContext,
-  promptUser: PromptUserFn,
-): Promise<boolean> {
-  console.log(
-    `\nbaton: step "${step.id}" validation failed — expected artifact not found.`,
-  );
-  const choice = await promptUser(
-    '[r] Resume previous session / [q] Exit workflow: ',
-  );
-
-  if (choice !== 'r') {
-    console.log('\nbaton: workflow stopped.');
-    return false;
-  }
-
-  const sessionId = context.sessionIds[step.id];
-  if (!sessionId) {
-    console.log(
-      `\nbaton: cannot resume step "${step.id}" — no session ID recorded. Stopping.`,
-    );
-    return false;
-  }
-
-  console.log(`\nbaton: resuming session ${sessionId}...`);
-  const resumeProc = Bun.spawn(['claude', '--resume', sessionId], {
-    stdin: 'inherit',
-    stdout: 'inherit',
-    stderr: 'inherit',
-  });
-  await resumeProc.exited;
-
-  if (!context.engine?.validateStep?.(step.id, context.params)) {
-    console.log(
-      `\nbaton: step "${step.id}" still failed validation after resume. Stopping.`,
-    );
-    return false;
-  }
-
-  return true;
 }

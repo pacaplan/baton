@@ -5,6 +5,7 @@ import {
 import type { Step } from '../schema.ts';
 import { evaluateBreakIf } from '../shared/flow-control.ts';
 import { interpolate } from '../shared/interpolation.ts';
+import { executeAgentStep } from './agent.ts';
 import { executeShellStep } from './shell.ts';
 
 export interface LoopResult {
@@ -161,6 +162,11 @@ async function dispatchChildStep(
 
   if (step.command) {
     return executeShellStep(step, context);
+  }
+
+  if (step.prompt || step.mode === 'interactive' || step.mode === 'headless') {
+    const outcome = await executeAgentStep(step, context);
+    return outcome === 'aborted' ? 'failed' : outcome;
   }
 
   return 'failed';

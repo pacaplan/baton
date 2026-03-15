@@ -4,6 +4,7 @@ import { createSubWorkflowContext } from '../context.ts';
 import { loadWorkflow } from '../loader.ts';
 import type { Step, Workflow } from '../schema.ts';
 import { interpolate } from '../shared/interpolation.ts';
+import { executeAgentStep } from './agent.ts';
 import { executeLoopStep } from './loop.ts';
 import { executeShellStep } from './shell.ts';
 
@@ -127,11 +128,8 @@ async function dispatchSubWorkflowChild(
   }
 
   if (step.prompt || step.mode === 'interactive' || step.mode === 'headless') {
-    // Agent steps in sub-workflows require the agent executor
-    // which will be wired up in the agent executor task
-    throw new Error(
-      `Agent steps in sub-workflows are not yet supported (step "${step.id}")`,
-    );
+    const outcome = await executeAgentStep(step, context);
+    return outcome === 'aborted' ? 'failed' : outcome;
   }
 
   throw new Error(`Unknown step type in sub-workflow step "${step.id}"`);
