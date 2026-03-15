@@ -84,10 +84,14 @@ function encodePath(dirPath: string): string {
 
 /**
  * Sanitize a workflow name for safe use in file paths.
- * Replaces path-unsafe characters (/, \, ..) with dashes.
+ * Replaces path-unsafe and filename-invalid characters with dashes.
  */
 function sanitizeWorkflowName(name: string): string {
-  return name.replace(/\.\./g, '-').replace(/[/\\]/g, '-');
+  const sanitized = name
+    .replace(/\.\./g, '-')
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .trim();
+  return sanitized || 'workflow';
 }
 
 /**
