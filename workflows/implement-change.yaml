@@ -5,13 +5,11 @@ agent: claude-code
 params:
   - name: change_name
     required: true
-  - name: task_files
-    required: true
 
 steps:
   - id: implement-tasks
     loop:
-      over: task_files
+      over: "openspec/changes/{{change_name}}/tasks/*.task.md"
       as: task_file
     steps:
       - id: implement-single-task

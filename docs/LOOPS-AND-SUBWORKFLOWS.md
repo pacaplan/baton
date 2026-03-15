@@ -74,7 +74,7 @@ Each loop iteration gets its own execution context:
 - Inherits `params` from parent, plus any loop variable (`as`)
 - `lastStepOutcome` resets each iteration
 
-This means `session: resume` inside a loop body resumes from a step within the *same iteration*, not from a previous iteration. To chain sessions across iterations, store the session ID in a captured variable.
+This means `session: resume` inside a loop body resumes from a step within the *same iteration*, not from a previous iteration.
 
 ## Sub-Workflows
 
@@ -192,7 +192,7 @@ params:
 steps:
   - id: implement-tasks
     loop:
-      over: task_files
+      over: "openspec/changes/{{change_name}}/tasks/*.task.md"
       as: task_file
     steps:
       - id: implement-single-task

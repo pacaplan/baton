@@ -98,6 +98,21 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
         return true;
       },
       { message: '"model" is only allowed on agent steps' },
+    )
+    .refine(
+      (step) => {
+        if (step.loop && !(Array.isArray(step.steps) && step.steps.length > 0))
+          return false;
+        return true;
+      },
+      { message: '"loop" requires a non-empty "steps" array' },
+    )
+    .refine(
+      (step) => {
+        if (step.params && !step.workflow) return false;
+        return true;
+      },
+      { message: '"params" is only allowed on sub-workflow steps' },
     ),
 );
 
