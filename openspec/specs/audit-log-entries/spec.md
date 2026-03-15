@@ -1,7 +1,7 @@
 # audit-log-entries Specification
 
 ## Purpose
-TBD - created by archiving change audit-log. Update Purpose after archive.
+Define the structure, types, and content requirements for individual audit log entries emitted during workflow execution.
 ## Requirements
 ### Requirement: Event types
 
@@ -13,7 +13,7 @@ The audit log SHALL support these event types: `run_start`, `run_end`, `step_sta
 
 ### Requirement: Nesting prefix
 
-Every audit log entry SHALL include a nesting prefix that encodes the full path to the current execution point. Loop steps carry their iteration index as `step_name:N`. Sub-workflows are marked with `sub:workflow_name`. Top-level steps use `[step_name]`.
+Every audit log entry SHALL include a nesting prefix that encodes the full path to the current execution point. Loop steps carry their iteration index as `step_name:N`. Sub-workflows are marked with `sub:workflow_name`. Top-level steps use `[step_name]`. Root-scoped events (`run_start`, `run_end`, `error`) use an empty prefix string.
 
 #### Scenario: Top-level step
 - **WHEN** a step `validate` executes at the workflow root

@@ -88,7 +88,7 @@ Baton writes `baton-state.json` after each step. If a workflow is interrupted, `
 
 Every workflow run produces a structured audit log at `~/.baton/projects/{encoded-cwd}/logs/{workflow-name}-{timestamp}.log`. Each line is a hybrid format: ISO-8601 timestamp, nesting prefix, event type, then a JSON payload.
 
-```
+```text
 2026-03-15T18:30:00Z [validate] step_start {"command":"npm test","context":{...}}
 2026-03-15T18:30:02Z [validate] step_end {"outcome":"success","duration_ms":2000,"exit_code":0,"stderr":""}
 2026-03-15T18:30:02Z [task-loop:0, implement] step_start {"prompt":"Implement tasks/1.md",...}

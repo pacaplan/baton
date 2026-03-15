@@ -116,6 +116,7 @@ function createCrashHandler(
       data: { outcome: 'failed', duration_ms: Date.now() - runStartTime },
     });
     auditLogger.close();
+    process.exit(1);
   };
 }
 
@@ -219,9 +220,9 @@ export async function runWorkflow(
   emitRunStart(auditLogger, workflowFile, workflow, workflowHash, params, from);
   console.log(`\nbaton: running workflow "${workflow.name}"\n`);
 
-  let runSuccess = true;
+  let runSuccess = false;
   try {
-    runSuccess = await executeStepLoop(
+    const loopResult = await executeStepLoop(
       workflow,
       startIndex,
       context,
@@ -229,6 +230,7 @@ export async function runWorkflow(
       stateDir,
       promptUser,
     );
+    runSuccess = loopResult;
     if (runSuccess) {
       deleteState(stateDir);
       console.log('baton: workflow complete');

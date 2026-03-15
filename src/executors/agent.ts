@@ -48,7 +48,7 @@ export async function executeAgentStep(
     data: {
       prompt,
       mode,
-      session_strategy: step.session,
+      session_strategy: step.session ?? 'new',
       resolved_session_id: sessionId,
       model: step.model,
       enrichment,
@@ -78,8 +78,9 @@ export async function executeAgentStep(
     outcome = headlessResult.outcome;
     exitCode = headlessResult.exitCode;
   } else {
-    outcome = await waitForSignalOrExit(proc);
-    exitCode = outcome === 'success' ? 0 : 1;
+    const interactiveResult = await waitForSignalOrExit(proc);
+    outcome = interactiveResult.outcome;
+    exitCode = interactiveResult.exitCode;
   }
 
   const discoveredSessionId = discoverAndStoreSession(step, context, spawnTime);
@@ -197,30 +198,41 @@ async function runHeadlessWithSigint(
   }
 }
 
+/** Read the signal file action, defaulting to 'continue' on parse failure. */
+function readSignalAction(): string {
+  try {
+    const raw = readFileSync(SIGNAL_FILE, 'utf-8').trim();
+    const signal = JSON.parse(raw);
+    return signal.action ?? 'continue';
+  } catch {
+    // Malformed signal -- treat as continue
+    return 'continue';
+  }
+}
+
 /** Interactive mode: poll .baton-signal file, or wait for process exit. */
-async function waitForSignalOrExit(proc: Subprocess): Promise<StepOutcome> {
+async function waitForSignalOrExit(
+  proc: Subprocess,
+): Promise<{ outcome: StepOutcome; exitCode: number }> {
   return new Promise((resolve) => {
     const interval = setInterval(() => {
       if (existsSync(SIGNAL_FILE)) {
         clearInterval(interval);
-        let action = 'continue';
-        try {
-          const raw = readFileSync(SIGNAL_FILE, 'utf-8').trim();
-          const signal = JSON.parse(raw);
-          action = signal.action ?? 'continue';
-        } catch {
-          // Malformed signal -- treat as continue
-        }
+        const action = readSignalAction();
         cleanSignalFile();
         proc.kill('SIGTERM');
-        resolve(action === 'continue' ? 'success' : 'aborted');
+        // Signal-based exit: use 0 for continue, 1 for abort
+        resolve({
+          outcome: action === 'continue' ? 'success' : 'aborted',
+          exitCode: action === 'continue' ? 0 : 1,
+        });
       }
     }, 500);
 
-    proc.exited.then(() => {
+    proc.exited.then((exitCode) => {
       clearInterval(interval);
       cleanSignalFile();
-      resolve('aborted');
+      resolve({ outcome: 'aborted', exitCode });
     });
   });
 }

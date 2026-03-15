@@ -1,7 +1,7 @@
 # audit-log-storage Specification
 
 ## Purpose
-TBD - created by archiving change audit-log. Update Purpose after archive.
+Define how baton persists audit log files to disk, including directory layout, file naming, format, retention policy, and flush-on-write guarantees.
 ## Requirements
 ### Requirement: Log directory location
 

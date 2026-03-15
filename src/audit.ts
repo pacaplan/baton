@@ -83,6 +83,14 @@ function encodePath(dirPath: string): string {
 }
 
 /**
+ * Sanitize a workflow name for safe use in file paths.
+ * Replaces path-unsafe characters (/, \, ..) with dashes.
+ */
+function sanitizeWorkflowName(name: string): string {
+  return name.replace(/\.\./g, '-').replace(/[/\\]/g, '-');
+}
+
+/**
  * Create an AuditLogger instance for a workflow run.
  * Log path: ~/.baton/projects/{encoded-cwd}/logs/{workflow-name}-{timestamp}.log
  */
@@ -93,7 +101,8 @@ export function createAuditLogger(
   const home = process.env.HOME || require('node:os').homedir();
   const encoded = encodePath(cwd);
   const timestamp = new Date().toISOString().replace(/:/g, '-');
+  const safeName = sanitizeWorkflowName(workflowName);
   const logDir = join(home, '.baton', 'projects', encoded, 'logs');
-  const logFile = join(logDir, `${workflowName}-${timestamp}.log`);
+  const logFile = join(logDir, `${safeName}-${timestamp}.log`);
   return new AuditLogger(logFile);
 }

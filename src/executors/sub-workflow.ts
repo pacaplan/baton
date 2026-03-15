@@ -35,6 +35,28 @@ async function executeChildSteps(
 ): Promise<StepOutcome> {
   for (const childStep of workflow.steps) {
     if (shouldSkip(childStep, childContext)) {
+      const prefix = buildPrefix(childContext.nestingPath, childStep.id);
+      childContext.auditLogger?.emit({
+        timestamp: new Date().toISOString(),
+        prefix,
+        type: 'step_start',
+        data: {
+          context: {
+            params: { ...childContext.params },
+            capturedVariables: { ...childContext.capturedVariables },
+          },
+        },
+      });
+      childContext.auditLogger?.emit({
+        timestamp: new Date().toISOString(),
+        prefix,
+        type: 'step_end',
+        data: {
+          outcome: 'skipped',
+          skip_if: childStep.skip_if,
+          duration_ms: 0,
+        },
+      });
       continue;
     }
 
