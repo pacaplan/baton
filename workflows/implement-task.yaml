@@ -1,0 +1,17 @@
+name: implement-task
+description: "Implement a single task: agent step then gauntlet retry"
+agent: claude-code
+
+params:
+  - name: task_file
+    required: true
+
+steps:
+  - id: implement
+    mode: headless
+    session: new
+    prompt: |
+      Implement the task described in {{task_file}}.
+
+  - id: run-gauntlet
+    workflow: run-gauntlet.yaml

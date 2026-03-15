@@ -3,6 +3,7 @@ dist/
 bin/
 *.log
 .DS_Store
+baton-state.json
 gauntlet_logs
 .gauntlet/current-task-context.md
 .claude/worktrees/

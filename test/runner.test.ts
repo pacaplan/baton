@@ -183,7 +183,7 @@ describe('runWorkflow', () => {
     const stateFile = join(testStateDir, 'baton-state.json');
     expect(existsSync(stateFile)).toBe(true);
     const state = JSON.parse(readFileSync(stateFile, 'utf-8'));
-    expect(state.currentStep).toBe('failing');
+    expect(state.currentStep.stepId).toBe('failing');
     expect(state.workflowName).toBe('test-wf');
   });
 });

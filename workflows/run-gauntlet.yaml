@@ -1,0 +1,25 @@
+name: run-gauntlet
+description: "Counted retry loop: run gauntlet, fix on failure, max 3 attempts"
+agent: claude-code
+
+steps:
+  - id: gauntlet-retry
+    loop:
+      max: 3
+    steps:
+      - id: run-gauntlet
+        mode: shell
+        command: agent-gauntlet run --enable-review task-compliance
+        capture: gauntlet_output
+        continue_on_failure: true
+        break_if: success
+
+      - id: fix-violations
+        mode: headless
+        session: inherit
+        prompt: |
+          The gauntlet found violations. Fix them:
+
+          {{gauntlet_output}}
+        skip_if: previous_success
+        continue_on_failure: true
