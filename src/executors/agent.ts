@@ -34,12 +34,27 @@ export async function executeAgentStep(
 ): Promise<StepOutcome> {
   if (!step.prompt) return 'failed';
 
-  const { prompt, enrichment } = buildPrompt(step, context);
-  const sessionId = resolveSessionId(step, context);
-  const mode = step.mode ?? 'interactive';
-
   const prefix = buildPrefix(context.nestingPath, step.id);
   const startTime = Date.now();
+  const mode = step.mode ?? 'interactive';
+
+  let prompt: string;
+  let enrichment: string | undefined;
+  let sessionId: string | undefined;
+
+  try {
+    const built = buildPrompt(step, context);
+    prompt = built.prompt;
+    enrichment = built.enrichment;
+    sessionId = resolveSessionId(step, context);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    emitAgentStartEnd(context, prefix, startTime, mode, step, {
+      outcome: 'failed',
+      error,
+    });
+    return 'failed';
+  }
 
   context.auditLogger?.emit({
     timestamp: new Date().toISOString(),
@@ -60,7 +75,6 @@ export async function executeAgentStep(
   });
 
   const args = buildArgsFromResolved(step, prompt, sessionId);
-
   logStepMode(step);
   cleanSignalFile();
 
@@ -98,6 +112,40 @@ export async function executeAgentStep(
   });
 
   return outcome;
+}
+
+/** Emit paired step_start/step_end for early failures (prompt build, etc). */
+function emitAgentStartEnd(
+  context: ExecutionContext,
+  prefix: string,
+  startTime: number,
+  mode: string,
+  step: Step,
+  result: { outcome: StepOutcome; error: string },
+): void {
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_start',
+    data: {
+      mode,
+      session_strategy: step.session ?? 'new',
+      context: {
+        params: { ...context.params },
+        capturedVariables: { ...context.capturedVariables },
+      },
+    },
+  });
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_end',
+    data: {
+      outcome: result.outcome,
+      error: result.error,
+      duration_ms: Date.now() - startTime,
+    },
+  });
 }
 
 /** Build the final prompt with interpolation and engine enrichment. */

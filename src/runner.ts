@@ -127,13 +127,18 @@ function emitRunStart(
   workflow: Workflow,
   workflowHash: string,
   params: Record<string, string>,
+  context: ExecutionContext,
   from?: string,
 ): void {
   const data: Record<string, unknown> = {
     workflow_file: workflowFile,
     workflow_name: workflow.name,
     workflow_hash: workflowHash,
-    params: { ...params },
+    context: {
+      params: { ...params },
+      capturedVariables: { ...context.capturedVariables },
+      sessionIds: { ...context.sessionIds },
+    },
   };
   if (from) {
     data.resumed = true;
@@ -217,7 +222,15 @@ export async function runWorkflow(
     auditLogger,
   });
 
-  emitRunStart(auditLogger, workflowFile, workflow, workflowHash, params, from);
+  emitRunStart(
+    auditLogger,
+    workflowFile,
+    workflow,
+    workflowHash,
+    params,
+    context,
+    from,
+  );
   console.log(`\nbaton: running workflow "${workflow.name}"\n`);
 
   let runSuccess = false;

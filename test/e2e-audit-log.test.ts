@@ -168,7 +168,8 @@ describe('E2E: audit log', () => {
 
     expect(runStart).toBeTruthy();
     expect(runStart!.data.workflow_name).toBe('audit-test');
-    expect(runStart!.data.params).toEqual({});
+    const ctx = runStart!.data.context as Record<string, unknown>;
+    expect(ctx.params).toEqual({});
   });
 
   it('run_end includes success outcome', async () => {
@@ -259,10 +260,10 @@ describe('E2E: audit log', () => {
     // sub_workflow_end should have outcome
     expect(subEnds[0]!.data.outcome).toBe('success');
 
-    // Sub-workflow step_start should include workflow_path
-    const subStepStart = events.find(e => e.type === 'step_start' && e.data.workflow_path);
+    // Sub-workflow step_start should include context
+    const subStepStart = events.find(e => e.type === 'step_start' && e.prefix.includes('invoke-sub'));
     expect(subStepStart).toBeTruthy();
-    expect(subStepStart!.data.params).toEqual({ msg: 'hello-from-parent' });
+    expect(subStepStart!.data.context).toBeDefined();
 
     // Child step events should include the sub-workflow nesting prefix
     const childStepStart = events.find(e =>

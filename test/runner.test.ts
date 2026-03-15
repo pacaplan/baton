@@ -603,7 +603,8 @@ describe('runWorkflow audit logging', () => {
     expect(runStart).toBeTruthy();
     expect(runStart!.data.workflow_file).toBe('test.yaml');
     expect(runStart!.data.workflow_name).toBe('test-wf');
-    expect(runStart!.data.params).toEqual({ env: 'staging' });
+    const ctx = runStart!.data.context as Record<string, unknown>;
+    expect(ctx.params).toEqual({ env: 'staging' });
   });
 
   it('run_end includes outcome success for successful run', async () => {

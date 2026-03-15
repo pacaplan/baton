@@ -84,21 +84,6 @@ export async function executeSubWorkflowStep(
 ): Promise<StepOutcome> {
   if (!step.workflow) return 'failed';
 
-  const workflowPath = resolveWorkflowPath(step.workflow, parentContext);
-
-  let workflow: Workflow;
-  try {
-    workflow = loadWorkflow(workflowPath, { isSubWorkflow: true });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `Sub-workflow "${step.id}": failed to load "${workflowPath}": ${msg}`,
-    );
-  }
-
-  const resolvedParams = resolveParams(step.params, parentContext);
-  validateSubWorkflowParams(workflow, resolvedParams);
-
   const prefix = buildPrefix(parentContext.nestingPath, step.id);
   const startTime = Date.now();
 
@@ -107,14 +92,35 @@ export async function executeSubWorkflowStep(
     prefix,
     type: 'step_start',
     data: {
-      workflow_path: workflowPath,
-      params: { ...resolvedParams },
       context: {
         params: { ...parentContext.params },
         capturedVariables: { ...parentContext.capturedVariables },
       },
     },
   });
+
+  let workflowPath: string;
+  let workflow: Workflow;
+  let resolvedParams: Record<string, string>;
+  try {
+    workflowPath = resolveWorkflowPath(step.workflow, parentContext);
+    workflow = loadWorkflow(workflowPath, { isSubWorkflow: true });
+    resolvedParams = resolveParams(step.params, parentContext);
+    validateSubWorkflowParams(workflow, resolvedParams);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    parentContext.auditLogger?.emit({
+      timestamp: new Date().toISOString(),
+      prefix,
+      type: 'step_end',
+      data: {
+        outcome: 'failed',
+        error,
+        duration_ms: Date.now() - startTime,
+      },
+    });
+    throw err;
+  }
 
   const childContext = createSubWorkflowContext(parentContext, {
     stepId: step.id,
@@ -124,12 +130,28 @@ export async function executeSubWorkflowStep(
   });
 
   const childPrefix = buildNestingPrefix(childContext.nestingPath);
-  const outcome = await executeSubWorkflowBody(
-    workflow,
-    workflowPath,
-    childContext,
-    childPrefix,
-  );
+  let outcome: StepOutcome;
+  try {
+    outcome = await executeSubWorkflowBody(
+      workflow,
+      workflowPath,
+      childContext,
+      childPrefix,
+    );
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    parentContext.auditLogger?.emit({
+      timestamp: new Date().toISOString(),
+      prefix,
+      type: 'step_end',
+      data: {
+        outcome: 'failed',
+        error,
+        duration_ms: Date.now() - startTime,
+      },
+    });
+    throw err;
+  }
 
   parentContext.auditLogger?.emit({
     timestamp: new Date().toISOString(),

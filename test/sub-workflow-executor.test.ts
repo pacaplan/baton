@@ -205,11 +205,9 @@ describe('SubWorkflowExecutor: audit events', () => {
     await executeSubWorkflowStep(step, parentCtx);
 
     const stepStart = logger.events.find(e =>
-      e.type === 'step_start' && e.data.workflow_path !== undefined
+      e.type === 'step_start' && e.prefix === '[run-sub]'
     );
     expect(stepStart).toBeTruthy();
-    expect(stepStart!.data.workflow_path).toContain('sub-workflow-with-params.yaml');
-    expect(stepStart!.data.params).toEqual({ msg: 'hello-from-parent' });
     expect(stepStart!.data.context).toEqual({
       params: { greeting: 'hello-from-parent' },
       capturedVariables: {},
