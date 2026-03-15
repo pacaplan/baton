@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { type AuditLogger, buildPrefix, createAuditLogger } from './audit.ts';
 import { createRootContext, type ExecutionContext } from './context.ts';
 import type { Engine } from './engine.ts';
 import {
@@ -94,41 +95,66 @@ async function defaultPromptUser(message: string): Promise<string> {
   });
 }
 
-export async function runWorkflow(
+/** Create crash handler that emits error + run_end before exit. */
+function createCrashHandler(
+  auditLogger: AuditLogger,
+  runStartTime: number,
+): (err: unknown) => void {
+  return (err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    auditLogger.emit({
+      timestamp: new Date().toISOString(),
+      prefix: '',
+      type: 'error',
+      data: { message, stack },
+    });
+    auditLogger.emit({
+      timestamp: new Date().toISOString(),
+      prefix: '',
+      type: 'run_end',
+      data: { outcome: 'failed', duration_ms: Date.now() - runStartTime },
+    });
+    auditLogger.close();
+  };
+}
+
+/** Emit run_start event with workflow metadata. */
+function emitRunStart(
+  auditLogger: AuditLogger,
+  workflowFile: string,
   workflow: Workflow,
+  workflowHash: string,
   params: Record<string, string>,
-  options: RunWorkflowOptions = {},
-): Promise<boolean> {
-  const {
-    from,
-    workflowFile = '',
-    stateDir: defaultStateDir = process.cwd(),
-    engine,
-    sessionIds: initialSessionIds,
-    capturedVariables: initialCaptured,
-    promptUser = defaultPromptUser,
-  } = options;
-
-  validateParams(workflow, params);
-
-  if (engine?.validateWorkflow) {
-    engine.validateWorkflow(workflow, params);
+  from?: string,
+): void {
+  const data: Record<string, unknown> = {
+    workflow_file: workflowFile,
+    workflow_name: workflow.name,
+    workflow_hash: workflowHash,
+    params: { ...params },
+  };
+  if (from) {
+    data.resumed = true;
+    data.resume_from = from;
   }
-
-  const startIndex = resolveStartIndex(workflow, from);
-  const stateDir = resolveStateDir(engine, params, defaultStateDir);
-  const workflowHash = computeHash(workflowFile);
-
-  const context = createRootContext({
-    params,
-    workflowFile,
-    engine: engine ?? null,
-    sessionIds: initialSessionIds,
-    capturedVariables: initialCaptured,
+  auditLogger.emit({
+    timestamp: new Date().toISOString(),
+    prefix: '',
+    type: 'run_start',
+    data,
   });
+}
 
-  console.log(`\nbaton: running workflow "${workflow.name}"\n`);
-
+/** Execute the step loop and return whether the run succeeded. */
+async function executeStepLoop(
+  workflow: Workflow,
+  startIndex: number,
+  context: ExecutionContext,
+  workflowHash: string,
+  stateDir: string,
+  promptUser: PromptUserFn,
+): Promise<boolean> {
   for (let i = startIndex; i < workflow.steps.length; i++) {
     const step = workflow.steps[i];
     if (!step) continue;
@@ -144,10 +170,85 @@ export async function runWorkflow(
     );
     if (!shouldContinue) return false;
   }
-
-  deleteState(stateDir);
-  console.log('baton: workflow complete');
   return true;
+}
+
+export async function runWorkflow(
+  workflow: Workflow,
+  params: Record<string, string>,
+  options: RunWorkflowOptions = {},
+): Promise<boolean> {
+  const {
+    from,
+    workflowFile = '',
+    stateDir: defaultStateDir = process.cwd(),
+    engine,
+    sessionIds: initialSessionIds,
+    capturedVariables: initialCaptured,
+    promptUser = defaultPromptUser,
+  } = options;
+
+  // Validation happens before audit logger is created -- if validation fails,
+  // no audit log file is created (per spec)
+  validateParams(workflow, params);
+  if (engine?.validateWorkflow) {
+    engine.validateWorkflow(workflow, params);
+  }
+
+  const startIndex = resolveStartIndex(workflow, from);
+  const stateDir = resolveStateDir(engine, params, defaultStateDir);
+  const workflowHash = computeHash(workflowFile);
+
+  // Create audit logger after validation succeeds
+  const auditLogger = createAuditLogger(workflow.name);
+  const runStartTime = Date.now();
+  const crashHandler = createCrashHandler(auditLogger, runStartTime);
+
+  process.on('uncaughtException', crashHandler);
+  process.on('unhandledRejection', crashHandler);
+
+  const context = createRootContext({
+    params,
+    workflowFile,
+    engine: engine ?? null,
+    sessionIds: initialSessionIds,
+    capturedVariables: initialCaptured,
+    auditLogger,
+  });
+
+  emitRunStart(auditLogger, workflowFile, workflow, workflowHash, params, from);
+  console.log(`\nbaton: running workflow "${workflow.name}"\n`);
+
+  let runSuccess = true;
+  try {
+    runSuccess = await executeStepLoop(
+      workflow,
+      startIndex,
+      context,
+      workflowHash,
+      stateDir,
+      promptUser,
+    );
+    if (runSuccess) {
+      deleteState(stateDir);
+      console.log('baton: workflow complete');
+    }
+    return runSuccess;
+  } finally {
+    // AuditLogger.emit/close are idempotent -- safe even if crash handler already ran
+    auditLogger.emit({
+      timestamp: new Date().toISOString(),
+      prefix: '',
+      type: 'run_end',
+      data: {
+        outcome: runSuccess ? 'success' : 'failed',
+        duration_ms: Date.now() - runStartTime,
+      },
+    });
+    auditLogger.close();
+    process.removeListener('uncaughtException', crashHandler);
+    process.removeListener('unhandledRejection', crashHandler);
+  }
 }
 
 /** Route a step to the correct executor based on its type. */
@@ -268,6 +369,31 @@ async function dispatchStep(
     console.log(
       `--- step ${index + 1}/${workflow.steps.length}: ${step.id} [skipped] ---`,
     );
+
+    // Emit skipped step events
+    const prefix = buildPrefix(context.nestingPath, step.id);
+    context.auditLogger?.emit({
+      timestamp: new Date().toISOString(),
+      prefix,
+      type: 'step_start',
+      data: {
+        context: {
+          params: { ...context.params },
+          capturedVariables: { ...context.capturedVariables },
+        },
+      },
+    });
+    context.auditLogger?.emit({
+      timestamp: new Date().toISOString(),
+      prefix,
+      type: 'step_end',
+      data: {
+        outcome: 'skipped',
+        skip_if: step.skip_if,
+        duration_ms: 0,
+      },
+    });
+
     return true;
   }
 

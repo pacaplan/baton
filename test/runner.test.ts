@@ -19,13 +19,19 @@ function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
 }
 
 function makeMockProc(exitCode = 0) {
+  const stderrStream = new ReadableStream({
+    start(controller) {
+      controller.close();
+    },
+  });
+
   return {
     pid: 12345,
     exited: Promise.resolve(exitCode),
     kill: mock(() => {}),
     stdin: null,
     stdout: null,
-    stderr: null,
+    stderr: stderrStream,
   };
 }
 
@@ -39,6 +45,7 @@ describe('runWorkflow', () => {
     consoleLogSpy = spyOn(console, 'log').mockImplementation(() => {});
     spyOn(console, 'error').mockImplementation(() => {});
     spyOn(console, 'warn').mockImplementation(() => {});
+    spyOn(process.stderr, 'write').mockImplementation(() => true);
     testStateDir = join(tmpdir(), 'baton-runner-test-' + Date.now() + '-' + Math.random().toString(36).slice(2));
     mkdirSync(testStateDir, { recursive: true });
   });
@@ -197,6 +204,7 @@ describe('runWorkflow with engine', () => {
     spyOn(console, 'log').mockImplementation(() => {});
     spyOn(console, 'error').mockImplementation(() => {});
     spyOn(console, 'warn').mockImplementation(() => {});
+    spyOn(process.stderr, 'write').mockImplementation(() => true);
     testStateDir = join(tmpdir(), 'baton-runner-test-' + Date.now() + '-' + Math.random().toString(36).slice(2));
     mkdirSync(testStateDir, { recursive: true });
   });
@@ -502,5 +510,199 @@ describe('runWorkflow with engine', () => {
 
     // Both steps should have run
     expect(spawnSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('runWorkflow audit logging', () => {
+  let spawnSpy: ReturnType<typeof spyOn>;
+  let testStateDir: string;
+  let originalHome: string | undefined;
+  let testHome: string;
+
+  beforeEach(() => {
+    spawnSpy = spyOn(Bun, 'spawn').mockImplementation(() => makeMockProc(0) as never);
+    spyOn(console, 'log').mockImplementation(() => {});
+    spyOn(console, 'error').mockImplementation(() => {});
+    spyOn(console, 'warn').mockImplementation(() => {});
+    spyOn(process.stderr, 'write').mockImplementation(() => true);
+    testStateDir = join(tmpdir(), 'baton-runner-audit-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+    mkdirSync(testStateDir, { recursive: true });
+    originalHome = process.env.HOME;
+    testHome = join(tmpdir(), 'baton-audit-home-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+    mkdirSync(testHome, { recursive: true });
+    process.env.HOME = testHome;
+  });
+
+  afterEach(() => {
+    spawnSpy.mockRestore();
+    process.env.HOME = originalHome;
+    if (existsSync(testStateDir)) {
+      rmSync(testStateDir, { recursive: true });
+    }
+    if (existsSync(testHome)) {
+      rmSync(testHome, { recursive: true });
+    }
+  });
+
+  function findLogFile(): string | null {
+    const logsDir = join(testHome, '.baton', 'projects');
+    if (!existsSync(logsDir)) return null;
+    // Walk to find the .log file
+    const { readdirSync, statSync } = require('node:fs');
+    function walk(dir: string): string | null {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          const found = walk(full);
+          if (found) return found;
+        } else if (entry.endsWith('.log')) {
+          return full;
+        }
+      }
+      return null;
+    }
+    return walk(logsDir);
+  }
+
+  function readLogEvents(logPath: string): Array<{ line: string; type: string; data: Record<string, unknown> }> {
+    const content = readFileSync(logPath, 'utf-8').trim();
+    if (!content) return [];
+    return content.split('\n').map(line => {
+      const jsonStart = line.indexOf('{');
+      const data = jsonStart >= 0 ? JSON.parse(line.substring(jsonStart)) : {};
+      // Extract event type: it's the word before the JSON
+      const beforeJson = line.substring(0, jsonStart).trim();
+      const parts = beforeJson.split(/\s+/);
+      const type = parts[parts.length - 1] || '';
+      return { line, type, data };
+    });
+  }
+
+  it('emits run_start before first step and run_end after last step', async () => {
+    const wf = makeWorkflow();
+    await runWorkflow(wf, {}, { workflowFile: 'test.yaml', stateDir: testStateDir });
+
+    const logPath = findLogFile();
+    expect(logPath).toBeTruthy();
+
+    const events = readLogEvents(logPath!);
+    const types = events.map(e => e.type);
+    expect(types[0]).toBe('run_start');
+    expect(types[types.length - 1]).toBe('run_end');
+  });
+
+  it('run_start includes workflow metadata and params', async () => {
+    const wf = makeWorkflow({
+      params: [{ name: 'env', required: true }],
+    });
+    await runWorkflow(wf, { env: 'staging' }, { workflowFile: 'test.yaml', stateDir: testStateDir });
+
+    const logPath = findLogFile();
+    const events = readLogEvents(logPath!);
+    const runStart = events.find(e => e.type === 'run_start');
+    expect(runStart).toBeTruthy();
+    expect(runStart!.data.workflow_file).toBe('test.yaml');
+    expect(runStart!.data.workflow_name).toBe('test-wf');
+    expect(runStart!.data.params).toEqual({ env: 'staging' });
+  });
+
+  it('run_end includes outcome success for successful run', async () => {
+    const wf = makeWorkflow();
+    await runWorkflow(wf, {}, { workflowFile: 'test.yaml', stateDir: testStateDir });
+
+    const logPath = findLogFile();
+    const events = readLogEvents(logPath!);
+    const runEnd = events.find(e => e.type === 'run_end');
+    expect(runEnd).toBeTruthy();
+    expect(runEnd!.data.outcome).toBe('success');
+    expect(typeof runEnd!.data.duration_ms).toBe('number');
+  });
+
+  it('run_end includes outcome failed when step fails', async () => {
+    spawnSpy.mockImplementation(() => makeMockProc(1) as never);
+
+    const wf = makeWorkflow({
+      steps: [
+        { id: 'failing', mode: 'shell', command: 'exit 1', session: 'new' },
+      ],
+    });
+    await runWorkflow(wf, {}, { workflowFile: 'test.yaml', stateDir: testStateDir });
+
+    const logPath = findLogFile();
+    const events = readLogEvents(logPath!);
+    const runEnd = events.find(e => e.type === 'run_end');
+    expect(runEnd).toBeTruthy();
+    expect(runEnd!.data.outcome).toBe('failed');
+  });
+
+  it('emits step_start and step_end for each step', async () => {
+    const wf = makeWorkflow({
+      steps: [
+        { id: 'first', mode: 'shell', command: 'echo first', session: 'new' },
+        { id: 'second', mode: 'shell', command: 'echo second', session: 'new' },
+      ],
+    });
+    await runWorkflow(wf, {}, { workflowFile: 'test.yaml', stateDir: testStateDir });
+
+    const logPath = findLogFile();
+    const events = readLogEvents(logPath!);
+    const stepStarts = events.filter(e => e.type === 'step_start');
+    const stepEnds = events.filter(e => e.type === 'step_end');
+    expect(stepStarts.length).toBe(2);
+    expect(stepEnds.length).toBe(2);
+  });
+
+  it('emits skipped step events with outcome and condition', async () => {
+    const wf = makeWorkflow({
+      steps: [
+        { id: 'first', mode: 'shell', command: 'echo first', session: 'new' },
+        { id: 'skipped', mode: 'shell', command: 'echo skip', session: 'new', skip_if: 'previous_success' },
+      ],
+    });
+    await runWorkflow(wf, {}, { workflowFile: 'test.yaml', stateDir: testStateDir });
+
+    const logPath = findLogFile();
+    const events = readLogEvents(logPath!);
+    // Find step_end for the skipped step
+    const skippedEnd = events.find(e =>
+      e.type === 'step_end' && e.data.outcome === 'skipped'
+    );
+    expect(skippedEnd).toBeTruthy();
+    expect(skippedEnd!.data.skip_if).toBe('previous_success');
+  });
+
+  it('includes resume info in run_start when resuming', async () => {
+    const wf = makeWorkflow({
+      steps: [
+        { id: 'step1', mode: 'shell', command: 'echo hello', session: 'new' },
+        { id: 'step2', mode: 'shell', command: 'echo world', session: 'new' },
+      ],
+    });
+    await runWorkflow(wf, {}, {
+      workflowFile: 'test.yaml',
+      stateDir: testStateDir,
+      from: 'step2',
+    });
+
+    const logPath = findLogFile();
+    const events = readLogEvents(logPath!);
+    const runStart = events.find(e => e.type === 'run_start');
+    expect(runStart!.data.resumed).toBe(true);
+    expect(runStart!.data.resume_from).toBe('step2');
+  });
+
+  it('does not create audit log when validation fails', async () => {
+    const wf = makeWorkflow({
+      params: [{ name: 'required_param', required: true }],
+    });
+
+    try {
+      await runWorkflow(wf, {}, { workflowFile: 'test.yaml', stateDir: testStateDir });
+    } catch {
+      // Expected to throw
+    }
+
+    const logPath = findLogFile();
+    expect(logPath).toBeNull();
   });
 });

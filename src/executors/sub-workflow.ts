@@ -47,6 +47,7 @@ export async function executeSubWorkflowStep(
     stepId: step.id,
     params: resolvedParams,
     workflowFile: workflowPath,
+    subWorkflowName: workflow.name,
   });
 
   console.log(`  sub-workflow: ${workflow.name} (${workflowPath})`);
