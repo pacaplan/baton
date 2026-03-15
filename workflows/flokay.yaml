@@ -5,8 +5,6 @@ agent: claude-code
 params:
   - name: change_name
     required: true
-  - name: idea_file
-    required: false
 
 engine:
   type: openspec
@@ -17,7 +15,6 @@ steps:
     workflow: plan-change.yaml
     params:
       change_name: "{{change_name}}"
-      idea_file: "{{idea_file}}"
 
   - id: implement
     workflow: implement-change.yaml
