@@ -1,0 +1,47 @@
+name: plan-change
+description: "Plan a flokay change: create, propose, spec, design, task-plan, and review"
+agent: claude-code
+
+params:
+  - name: change_name
+    required: true
+  - name: idea_file
+    required: false
+
+engine:
+  type: openspec
+  change_param: change_name
+
+steps:
+  - id: create
+    mode: shell
+    command: openspec new change "{{change_name}}"
+
+  - id: proposal
+    mode: interactive
+    session: new
+    prompt: |
+      /flokay:propose "{{change_name}}"
+      {{file:idea_file}}
+
+  - id: specs
+    mode: interactive
+    session: resume
+    prompt: /flokay:spec
+
+  - id: design
+    mode: interactive
+    session: new
+    prompt: /flokay:design
+
+  - id: tasks
+    mode: headless
+    session: new
+    prompt: /flokay:plan-tasks
+
+  - id: review
+    mode: headless
+    session: resume
+    prompt: |
+      /gauntlet-run review the change.
+      Then write review.md summarizing the results.

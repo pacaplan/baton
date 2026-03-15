@@ -16,3 +16,16 @@ steps:
         workflow: implement-task.yaml
         params:
           task_file: "{{task_file}}"
+
+  - id: archive
+    mode: shell
+    command: openspec archive {{change_name}} --yes
+
+  - id: archive-verify
+    mode: shell
+    command: agent-gauntlet skip
+
+  - id: finalize
+    mode: headless
+    session: resume
+    prompt: /flokay:finalize-pr
