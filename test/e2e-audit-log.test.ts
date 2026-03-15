@@ -198,4 +198,78 @@ describe('E2E: audit log', () => {
     const { stderr } = await runBaton('e2e-audit-stderr.yaml', testDir, { HOME: testHome });
     expect(stderr).toContain('stderr content');
   });
+
+  it('loop workflow emits iteration_start/iteration_end events', async () => {
+    const { exitCode } = await runBaton('e2e-counted-loop-break.yaml', testDir, { HOME: testHome });
+    expect(exitCode).toBe(0);
+
+    const logFiles = findLogFiles(testHome);
+    expect(logFiles.length).toBe(1);
+
+    const events = parseLogEvents(logFiles[0]!);
+    const types = events.map(e => e.type);
+
+    // Should have run_start, loop step_start, iteration events, loop step_end, after-loop step_start/end, run_end
+    expect(types[0]).toBe('run_start');
+    expect(types[types.length - 1]).toBe('run_end');
+
+    // Should have iteration events
+    const iterStarts = events.filter(e => e.type === 'iteration_start');
+    const iterEnds = events.filter(e => e.type === 'iteration_end');
+    expect(iterStarts.length).toBeGreaterThan(0);
+    expect(iterEnds.length).toBe(iterStarts.length);
+
+    // Loop step_start should include loop_type
+    const loopStart = events.find(e => e.type === 'step_start' && e.data.loop_type);
+    expect(loopStart).toBeTruthy();
+    expect(loopStart!.data.loop_type).toBe('counted');
+    expect(loopStart!.data.max).toBe(5);
+
+    // Loop step_end should include iterations_completed
+    const loopEnd = events.find(e => e.type === 'step_end' && e.data.iterations_completed !== undefined);
+    expect(loopEnd).toBeTruthy();
+    expect(loopEnd!.data.break_triggered).toBe(true);
+
+    // Iteration prefixes should include step:index
+    expect(iterStarts[0]!.prefix).toBe('[retry-loop:0]');
+  });
+
+  it('sub-workflow emits sub_workflow_start/sub_workflow_end events', async () => {
+    const { exitCode } = await runBaton('e2e-sub-workflow-params.yaml', testDir, { HOME: testHome });
+    expect(exitCode).toBe(0);
+
+    const logFiles = findLogFiles(testHome);
+    expect(logFiles.length).toBe(1);
+
+    const events = parseLogEvents(logFiles[0]!);
+    const types = events.map(e => e.type);
+
+    expect(types[0]).toBe('run_start');
+    expect(types[types.length - 1]).toBe('run_end');
+
+    // Should have sub_workflow_start and sub_workflow_end
+    const subStarts = events.filter(e => e.type === 'sub_workflow_start');
+    const subEnds = events.filter(e => e.type === 'sub_workflow_end');
+    expect(subStarts.length).toBe(1);
+    expect(subEnds.length).toBe(1);
+
+    // sub_workflow_start should have context
+    expect(subStarts[0]!.data.context).toBeDefined();
+
+    // sub_workflow_end should have outcome
+    expect(subEnds[0]!.data.outcome).toBe('success');
+
+    // Sub-workflow step_start should include workflow_path
+    const subStepStart = events.find(e => e.type === 'step_start' && e.data.workflow_path);
+    expect(subStepStart).toBeTruthy();
+    expect(subStepStart!.data.params).toEqual({ msg: 'hello-from-parent' });
+
+    // Child step events should include the sub-workflow nesting prefix
+    const childStepStart = events.find(e =>
+      e.type === 'step_start' && e.data.command !== undefined && e.prefix.includes('sub:')
+    );
+    expect(childStepStart).toBeTruthy();
+    expect(childStepStart!.prefix).toContain('invoke-sub');
+    expect(childStepStart!.prefix).toContain('sub:sub-workflow-with-params');
+  });
 });

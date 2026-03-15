@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Subprocess } from 'bun';
+import { buildPrefix } from '../audit.ts';
 import type { ExecutionContext } from '../context.ts';
 import type { Step } from '../schema.ts';
 import { interpolate } from '../shared/interpolation.ts';
@@ -33,8 +34,32 @@ export async function executeAgentStep(
 ): Promise<StepOutcome> {
   if (!step.prompt) return 'failed';
 
-  const prompt = buildPrompt(step, context);
-  const args = buildArgs(step, prompt, context);
+  const { prompt, enrichment } = buildPrompt(step, context);
+  const sessionId = resolveSessionId(step, context);
+  const mode = step.mode ?? 'interactive';
+
+  const prefix = buildPrefix(context.nestingPath, step.id);
+  const startTime = Date.now();
+
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_start',
+    data: {
+      prompt,
+      mode,
+      session_strategy: step.session,
+      resolved_session_id: sessionId,
+      model: step.model,
+      enrichment,
+      context: {
+        params: { ...context.params },
+        capturedVariables: { ...context.capturedVariables },
+      },
+    },
+  });
+
+  const args = buildArgsFromResolved(step, prompt, sessionId);
 
   logStepMode(step);
   cleanSignalFile();
@@ -47,40 +72,60 @@ export async function executeAgentStep(
   });
 
   let outcome: StepOutcome;
-  if (step.mode !== 'headless') {
-    outcome = await waitForSignalOrExit(proc);
+  let exitCode: number;
+  if (step.mode === 'headless') {
+    const headlessResult = await runHeadlessWithSigint(proc);
+    outcome = headlessResult.outcome;
+    exitCode = headlessResult.exitCode;
   } else {
-    outcome = await runHeadlessWithSigint(proc);
+    outcome = await waitForSignalOrExit(proc);
+    exitCode = outcome === 'success' ? 0 : 1;
   }
 
-  discoverAndStoreSession(step, context, spawnTime);
+  const discoveredSessionId = discoverAndStoreSession(step, context, spawnTime);
+
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_end',
+    data: {
+      exit_code: exitCode,
+      discovered_session_id: discoveredSessionId,
+      outcome,
+      duration_ms: Date.now() - startTime,
+    },
+  });
+
   return outcome;
 }
 
 /** Build the final prompt with interpolation and engine enrichment. */
-function buildPrompt(step: Step, context: ExecutionContext): string {
+function buildPrompt(
+  step: Step,
+  context: ExecutionContext,
+): { prompt: string; enrichment: string | undefined } {
   let prompt = interpolate(step.prompt ?? '', context);
+  let enrichment: string | undefined;
 
   if (context.engine?.enrichPrompt) {
-    const enrichment = context.engine.enrichPrompt(step.id, context.params);
-    if (enrichment) {
+    const result = context.engine.enrichPrompt(step.id, context.params);
+    if (result) {
+      enrichment = result;
       prompt = `${prompt}\n\n${enrichment}`;
     }
   }
 
-  return prompt;
+  return { prompt, enrichment };
 }
 
-/** Build the claude invocation args. */
-function buildArgs(
+/** Build the claude invocation args from pre-resolved values. */
+function buildArgsFromResolved(
   step: Step,
   prompt: string,
-  context: ExecutionContext,
+  sessionId: string | undefined,
 ): string[] {
   const args: string[] = ['claude'];
 
-  // Session resolution
-  const sessionId = resolveSessionId(step, context);
   if (sessionId) {
     args.push('--resume', sessionId);
   }
@@ -135,7 +180,9 @@ function logStepMode(step: Step): void {
  * Run a headless subprocess with SIGINT handling.
  * Registers a handler before spawn, removes it after exit.
  */
-async function runHeadlessWithSigint(proc: Subprocess): Promise<StepOutcome> {
+async function runHeadlessWithSigint(
+  proc: Subprocess,
+): Promise<{ outcome: StepOutcome; exitCode: number }> {
   const sigintHandler = () => {
     proc.kill();
   };
@@ -144,7 +191,7 @@ async function runHeadlessWithSigint(proc: Subprocess): Promise<StepOutcome> {
 
   try {
     const exitCode = await proc.exited;
-    return exitCode === 0 ? 'success' : 'failed';
+    return { outcome: exitCode === 0 ? 'success' : 'failed', exitCode };
   } finally {
     process.removeListener('SIGINT', sigintHandler);
   }
@@ -208,17 +255,18 @@ function findConversationId(
   return bestFile.replace('.jsonl', '');
 }
 
-/** Discover conversation ID and store in context. */
+/** Discover conversation ID and store in context. Returns discovered ID or undefined. */
 function discoverAndStoreSession(
   step: Step,
   context: ExecutionContext,
   spawnTime: number,
-): void {
+): string | undefined {
   const conversationId = findConversationId(process.cwd(), spawnTime);
   if (conversationId) {
     context.sessionIds[step.id] = conversationId;
     console.log(`  session: ${conversationId}`);
   }
+  return conversationId;
 }
 
 /**

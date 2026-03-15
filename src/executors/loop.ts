@@ -1,3 +1,4 @@
+import { buildPrefix } from '../audit.ts';
 import {
   createLoopIterationContext,
   type ExecutionContext,
@@ -57,8 +58,26 @@ async function executeCountedLoop(
   context: ExecutionContext,
   options: LoopExecuteOptions,
 ): Promise<LoopResult> {
+  const prefix = buildPrefix(context.nestingPath, stepId);
+  const startTime = Date.now();
+
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_start',
+    data: {
+      loop_type: 'counted',
+      max,
+      context: {
+        params: { ...context.params },
+        capturedVariables: { ...context.capturedVariables },
+      },
+    },
+  });
+
   const startIteration = options.resumeFromIteration ?? 0;
   let lastIteration = startIteration;
+  let iterationsCompleted = 0;
 
   for (let i = startIteration; i < max; i++) {
     lastIteration = i;
@@ -67,15 +86,41 @@ async function executeCountedLoop(
       iteration: i,
     });
 
-    const iterResult = await executeIterationBody(steps, iterCtx);
+    const iterResult = await executeIterationWithAudit(steps, iterCtx);
+    iterationsCompleted++;
+
     if (iterResult.failed) {
+      emitLoopStepEnd(
+        context,
+        prefix,
+        startTime,
+        iterationsCompleted,
+        false,
+        'failed',
+      );
       return { outcome: 'failed', lastIteration: i };
     }
     if (iterResult.breakTriggered) {
+      emitLoopStepEnd(
+        context,
+        prefix,
+        startTime,
+        iterationsCompleted,
+        true,
+        'success',
+      );
       return { outcome: 'success', lastIteration: i };
     }
   }
 
+  emitLoopStepEnd(
+    context,
+    prefix,
+    startTime,
+    iterationsCompleted,
+    false,
+    'exhausted',
+  );
   return { outcome: 'exhausted', lastIteration };
 }
 
@@ -90,12 +135,32 @@ async function executeForEachLoop(
   const pattern = interpolate(overPattern, context);
   const matches = await expandGlob(pattern);
 
+  const prefix = buildPrefix(context.nestingPath, stepId);
+  const startTime = Date.now();
+
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_start',
+    data: {
+      loop_type: 'for-each',
+      glob_pattern: pattern,
+      resolved_matches: [...matches],
+      context: {
+        params: { ...context.params },
+        capturedVariables: { ...context.capturedVariables },
+      },
+    },
+  });
+
   if (matches.length === 0) {
+    emitLoopStepEnd(context, prefix, startTime, 0, false, 'success');
     return { outcome: 'success', lastIteration: -1 };
   }
 
   const startIteration = options.resumeFromIteration ?? 0;
   let lastIteration = startIteration;
+  let iterationsCompleted = 0;
 
   for (let i = startIteration; i < matches.length; i++) {
     lastIteration = i;
@@ -109,21 +174,123 @@ async function executeForEachLoop(
       loopVar,
     });
 
-    const iterResult = await executeIterationBody(steps, iterCtx);
+    const iterResult = await executeIterationWithAudit(steps, iterCtx);
+    iterationsCompleted++;
+
     if (iterResult.failed) {
+      emitLoopStepEnd(
+        context,
+        prefix,
+        startTime,
+        iterationsCompleted,
+        false,
+        'failed',
+      );
       return { outcome: 'failed', lastIteration: i };
     }
     if (iterResult.breakTriggered) {
+      emitLoopStepEnd(
+        context,
+        prefix,
+        startTime,
+        iterationsCompleted,
+        true,
+        'success',
+      );
       return { outcome: 'success', lastIteration: i };
     }
   }
 
+  emitLoopStepEnd(
+    context,
+    prefix,
+    startTime,
+    iterationsCompleted,
+    false,
+    'success',
+  );
   return { outcome: 'success', lastIteration };
+}
+
+function emitLoopStepEnd(
+  context: ExecutionContext,
+  prefix: string,
+  startTime: number,
+  iterationsCompleted: number,
+  breakTriggered: boolean,
+  outcome: string,
+): void {
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_end',
+    data: {
+      iterations_completed: iterationsCompleted,
+      break_triggered: breakTriggered,
+      outcome,
+      duration_ms: Date.now() - startTime,
+    },
+  });
 }
 
 interface IterationResult {
   breakTriggered: boolean;
   failed: boolean;
+}
+
+async function executeIterationWithAudit(
+  steps: Step[],
+  iterCtx: ExecutionContext,
+): Promise<IterationResult> {
+  const nestingPath = iterCtx.nestingPath;
+  const lastSegment = nestingPath[nestingPath.length - 1];
+  if (!lastSegment || lastSegment.iteration === undefined) {
+    return executeIterationBody(steps, iterCtx);
+  }
+
+  const prefix = buildPrefix(
+    nestingPath.slice(0, -1),
+    `${lastSegment.stepId}:${lastSegment.iteration}`,
+  );
+
+  const iterStartTime = Date.now();
+  const iteration = lastSegment.iteration;
+  const loopVar = lastSegment.loopVar;
+
+  const startData: Record<string, unknown> = {
+    iteration,
+    context: {
+      params: { ...iterCtx.params },
+      capturedVariables: { ...iterCtx.capturedVariables },
+    },
+  };
+  if (loopVar) {
+    startData.loop_var = { ...loopVar };
+  }
+
+  iterCtx.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'iteration_start',
+    data: startData,
+  });
+
+  const result = await executeIterationBody(steps, iterCtx);
+
+  const outcome = result.failed ? 'failed' : 'success';
+
+  iterCtx.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'iteration_end',
+    data: {
+      iteration,
+      outcome,
+      duration_ms: Date.now() - iterStartTime,
+    },
+  });
+
+  return result;
 }
 
 async function executeIterationBody(

@@ -1,5 +1,6 @@
 import { dirname, resolve } from 'node:path';
-import type { ExecutionContext } from '../context.ts';
+import { buildPrefix } from '../audit.ts';
+import type { ExecutionContext, NestingSegment } from '../context.ts';
 import { createSubWorkflowContext } from '../context.ts';
 import { loadWorkflow } from '../loader.ts';
 import type { Step, Workflow } from '../schema.ts';
@@ -10,6 +11,43 @@ import { executeLoopStep } from './loop.ts';
 import { executeShellStep } from './shell.ts';
 
 type StepOutcome = 'success' | 'failed';
+
+/** Build a prefix string from a nesting path (without appending an extra step). */
+function buildNestingPrefix(nestingPath: NestingSegment[]): string {
+  const tokens: string[] = [];
+  for (const seg of nestingPath) {
+    if (seg.iteration === undefined) {
+      tokens.push(seg.stepId);
+    } else {
+      tokens.push(`${seg.stepId}:${seg.iteration}`);
+    }
+    if (seg.subWorkflowName) {
+      tokens.push(`sub:${seg.subWorkflowName}`);
+    }
+  }
+  return `[${tokens.join(', ')}]`;
+}
+
+/** Execute the child steps of a sub-workflow and return the outcome. */
+async function executeChildSteps(
+  workflow: Workflow,
+  childContext: ExecutionContext,
+): Promise<StepOutcome> {
+  for (const childStep of workflow.steps) {
+    if (shouldSkip(childStep, childContext)) {
+      continue;
+    }
+
+    const stepOutcome = await dispatchSubWorkflowChild(childStep, childContext);
+
+    childContext.lastStepOutcome = stepOutcome;
+
+    if (stepOutcome === 'failed' && !childStep.continue_on_failure) {
+      return 'failed';
+    }
+  }
+  return 'success';
+}
 
 /**
  * Execute a sub-workflow step.
@@ -36,13 +74,26 @@ export async function executeSubWorkflowStep(
     );
   }
 
-  // Resolve params: interpolate values using parent context
   const resolvedParams = resolveParams(step.params, parentContext);
-
-  // Validate required params
   validateSubWorkflowParams(workflow, resolvedParams);
 
-  // Create child context — only explicit params, no parent inheritance
+  const prefix = buildPrefix(parentContext.nestingPath, step.id);
+  const startTime = Date.now();
+
+  parentContext.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_start',
+    data: {
+      workflow_path: workflowPath,
+      params: { ...resolvedParams },
+      context: {
+        params: { ...parentContext.params },
+        capturedVariables: { ...parentContext.capturedVariables },
+      },
+    },
+  });
+
   const childContext = createSubWorkflowContext(parentContext, {
     stepId: step.id,
     params: resolvedParams,
@@ -50,24 +101,65 @@ export async function executeSubWorkflowStep(
     subWorkflowName: workflow.name,
   });
 
+  const childPrefix = buildNestingPrefix(childContext.nestingPath);
+  const outcome = await executeSubWorkflowBody(
+    workflow,
+    workflowPath,
+    childContext,
+    childPrefix,
+  );
+
+  parentContext.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_end',
+    data: {
+      outcome,
+      duration_ms: Date.now() - startTime,
+    },
+  });
+
+  return outcome;
+}
+
+/** Emit sub_workflow_start, execute child steps, emit sub_workflow_end. */
+async function executeSubWorkflowBody(
+  workflow: Workflow,
+  workflowPath: string,
+  childContext: ExecutionContext,
+  childPrefix: string,
+): Promise<StepOutcome> {
+  const subWorkflowStartTime = Date.now();
+
+  childContext.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix: childPrefix,
+    type: 'sub_workflow_start',
+    data: {
+      workflow_name: workflow.name,
+      workflow_path: workflowPath,
+      context: {
+        params: { ...childContext.params },
+        capturedVariables: { ...childContext.capturedVariables },
+      },
+    },
+  });
+
   console.log(`  sub-workflow: ${workflow.name} (${workflowPath})`);
 
-  // Execute each step in the sub-workflow
-  for (const childStep of workflow.steps) {
-    if (shouldSkip(childStep, childContext)) {
-      continue;
-    }
+  const outcome = await executeChildSteps(workflow, childContext);
 
-    const outcome = await dispatchSubWorkflowChild(childStep, childContext);
+  childContext.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix: childPrefix,
+    type: 'sub_workflow_end',
+    data: {
+      outcome,
+      duration_ms: Date.now() - subWorkflowStartTime,
+    },
+  });
 
-    childContext.lastStepOutcome = outcome;
-
-    if (outcome === 'failed' && !childStep.continue_on_failure) {
-      return 'failed';
-    }
-  }
-
-  return 'success';
+  return outcome;
 }
 
 function resolveWorkflowPath(
