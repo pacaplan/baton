@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { type AuditLogger, buildPrefix, createAuditLogger } from './audit.ts';
-import { createRootContext, type ExecutionContext } from './context.ts';
+import {
+  createRootContext,
+  type ExecutionContext,
+  type SubWorkflowChildState,
+} from './context.ts';
 import type { Engine } from './engine.ts';
 import {
   executeAgentStep,
@@ -21,6 +25,13 @@ import {
 } from './state.ts';
 
 type StepOutcome = 'success' | 'failed' | 'aborted';
+
+export enum WorkflowResult {
+  Success = 'success',
+  Failed = 'failed',
+  Stopped = 'stopped',
+}
+
 type PromptUserFn = (message: string) => Promise<string>;
 
 interface StepExecutionResult {
@@ -35,6 +46,8 @@ export interface RunWorkflowOptions {
   engine?: Engine;
   sessionIds?: Record<string, string>;
   capturedVariables?: Record<string, string>;
+  /** Child state for resuming inside a sub-workflow */
+  childState?: SubWorkflowChildState | null;
   /** Injected for testing: prompts user and returns their choice */
   promptUser?: PromptUserFn;
 }
@@ -68,10 +81,7 @@ function resolveStateDir(
   params: Record<string, string>,
   defaultDir: string,
 ): string {
-  if (engine?.getStateDir) {
-    return engine.getStateDir(params);
-  }
-  return defaultDir;
+  return engine?.getStateDir ? engine.getStateDir(params) : defaultDir;
 }
 
 function computeHash(workflowFile: string): string {
@@ -121,39 +131,33 @@ function createCrashHandler(
   };
 }
 
-/** Emit run_start event with workflow metadata. */
-function emitRunStart(
-  auditLogger: AuditLogger,
-  workflowFile: string,
+/** Re-run validation that was skipped at startup (e.g. change didn't exist yet). */
+function runDeferredValidation(
   workflow: Workflow,
-  workflowHash: string,
-  params: Record<string, string>,
   context: ExecutionContext,
-  from?: string,
-): void {
-  const data: Record<string, unknown> = {
-    workflow_file: workflowFile,
-    workflow_name: workflow.name,
-    workflow_hash: workflowHash,
-    context: {
-      params: { ...params },
-      capturedVariables: { ...context.capturedVariables },
-      sessionIds: { ...context.sessionIds },
-    },
-  };
-  if (from) {
-    data.resumed = true;
-    data.resume_from = from;
+): boolean {
+  if (
+    !(
+      context.engine?.needsDeferredValidation?.() &&
+      context.engine.validateWorkflow
+    )
+  ) {
+    return true;
   }
-  auditLogger.emit({
-    timestamp: new Date().toISOString(),
-    prefix: '',
-    type: 'run_start',
-    data,
-  });
+  try {
+    context.engine.validateWorkflow(
+      workflow,
+      context.params,
+      context.workflowFile,
+    );
+    return true;
+  } catch (err) {
+    console.log(`\nbaton: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
 }
 
-/** Execute the step loop and return whether the run succeeded. */
+/** Execute the step loop and return the workflow result. */
 async function executeStepLoop(
   workflow: Workflow,
   startIndex: number,
@@ -161,12 +165,12 @@ async function executeStepLoop(
   workflowHash: string,
   stateDir: string,
   promptUser: PromptUserFn,
-): Promise<boolean> {
+): Promise<WorkflowResult> {
   for (let i = startIndex; i < workflow.steps.length; i++) {
     const step = workflow.steps[i];
     if (!step) continue;
 
-    const shouldContinue = await dispatchStep(
+    const stepResult = await dispatchStep(
       step,
       i,
       workflow,
@@ -175,38 +179,27 @@ async function executeStepLoop(
       stateDir,
       promptUser,
     );
-    if (!shouldContinue) return false;
+    if (stepResult !== 'continue')
+      return stepResult === 'stopped'
+        ? WorkflowResult.Stopped
+        : WorkflowResult.Failed;
 
-    // Re-run deferred engine validation after the first step of a fresh run.
-    // The first step may create resources (e.g. openspec change) that enable
-    // validation which was skipped at startup.
     if (
       i === 0 &&
       startIndex === 0 &&
-      context.engine?.needsDeferredValidation?.() &&
-      context.engine.validateWorkflow
+      !runDeferredValidation(workflow, context)
     ) {
-      try {
-        context.engine.validateWorkflow(
-          workflow,
-          context.params,
-          context.workflowFile,
-        );
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.log(`\nbaton: ${message}`);
-        return false;
-      }
+      return WorkflowResult.Failed;
     }
   }
-  return true;
+  return WorkflowResult.Success;
 }
 
 export async function runWorkflow(
   workflow: Workflow,
   params: Record<string, string>,
   options: RunWorkflowOptions = {},
-): Promise<boolean> {
+): Promise<WorkflowResult> {
   const {
     from,
     workflowFile = '',
@@ -214,11 +207,10 @@ export async function runWorkflow(
     engine,
     sessionIds: initialSessionIds,
     capturedVariables: initialCaptured,
+    childState,
     promptUser = defaultPromptUser,
   } = options;
 
-  // Validation happens before audit logger is created -- if validation fails,
-  // no audit log file is created (per spec)
   validateParams(workflow, params);
   if (engine?.validateWorkflow) {
     engine.validateWorkflow(workflow, params, workflowFile);
@@ -227,8 +219,6 @@ export async function runWorkflow(
   const startIndex = resolveStartIndex(workflow, from);
   const stateDir = resolveStateDir(engine, params, defaultStateDir);
   const workflowHash = computeHash(workflowFile);
-
-  // Create audit logger after validation succeeds
   const auditLogger = createAuditLogger(workflow.name);
   const runStartTime = Date.now();
   const crashHandler = createCrashHandler(auditLogger, runStartTime);
@@ -244,21 +234,28 @@ export async function runWorkflow(
     capturedVariables: initialCaptured,
     auditLogger,
   });
-
-  emitRunStart(
-    auditLogger,
-    workflowFile,
-    workflow,
-    workflowHash,
-    params,
-    context,
-    from,
-  );
+  if (childState) context.resumeChildState = childState;
+  auditLogger.emit({
+    timestamp: new Date().toISOString(),
+    prefix: '',
+    type: 'run_start',
+    data: {
+      workflow_file: workflowFile,
+      workflow_name: workflow.name,
+      workflow_hash: workflowHash,
+      context: {
+        params: { ...params },
+        capturedVariables: { ...context.capturedVariables },
+        sessionIds: { ...context.sessionIds },
+      },
+      ...(from ? { resumed: true, resume_from: from } : {}),
+    },
+  });
   console.log(`\nbaton: running workflow "${workflow.name}"\n`);
 
-  let runSuccess = false;
+  let result: WorkflowResult = WorkflowResult.Failed;
   try {
-    const loopResult = await executeStepLoop(
+    result = await executeStepLoop(
       workflow,
       startIndex,
       context,
@@ -266,23 +263,22 @@ export async function runWorkflow(
       stateDir,
       promptUser,
     );
-    runSuccess = loopResult;
-    if (runSuccess) {
+    if (result === WorkflowResult.Success) {
       deleteState(stateDir);
       console.log('baton: workflow complete');
     } else {
-      const stateFilePath = getStateFilePath(stateDir);
-      console.log(`baton: to resume: baton resume ${stateFilePath}`);
+      console.log(
+        `baton: to resume: baton resume ${getStateFilePath(stateDir)}`,
+      );
     }
-    return runSuccess;
+    return result;
   } finally {
-    // AuditLogger.emit/close are idempotent -- safe even if crash handler already ran
     auditLogger.emit({
       timestamp: new Date().toISOString(),
       prefix: '',
       type: 'run_end',
       data: {
-        outcome: runSuccess ? 'success' : 'failed',
+        outcome: result === WorkflowResult.Stopped ? 'stopped' : result,
         duration_ms: Date.now() - runStartTime,
       },
     });
@@ -321,6 +317,16 @@ async function executeByType(
   throw new Error(`Unknown step type for step "${step.id}"`);
 }
 
+/** Convert SubWorkflowChildState to NestedStepState for serialization. */
+function toNestedStepState(child: SubWorkflowChildState): NestedStepState {
+  return {
+    stepId: child.stepId,
+    sessionIds: { ...child.sessionIds },
+    capturedVariables: { ...child.capturedVariables },
+    child: child.child ? toNestedStepState(child.child) : null,
+  };
+}
+
 /** Persist state after step execution. */
 function writeStepState(
   step: Step,
@@ -341,6 +347,9 @@ function writeStepState(
       },
       child: null,
     };
+  } else if (context.lastSubWorkflowChild) {
+    child = toNestedStepState(context.lastSubWorkflowChild);
+    context.lastSubWorkflowChild = undefined;
   }
 
   const nestedState: NestedStepState = {
@@ -396,6 +405,26 @@ async function handleOutcome(
   return true;
 }
 
+function emitSkippedStepEvents(step: Step, context: ExecutionContext): void {
+  const prefix = buildPrefix(context.nestingPath, step.id);
+  const ctx = {
+    params: { ...context.params },
+    capturedVariables: { ...context.capturedVariables },
+  };
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_start',
+    data: { context: ctx },
+  });
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_end',
+    data: { outcome: 'skipped', skip_if: step.skip_if, duration_ms: 0 },
+  });
+}
+
 /** Determine the step type and route to the appropriate executor. */
 async function dispatchStep(
   step: Step,
@@ -405,37 +434,13 @@ async function dispatchStep(
   workflowHash: string,
   stateDir: string,
   promptUser: PromptUserFn,
-): Promise<boolean> {
+): Promise<'continue' | 'stopped' | 'halt'> {
   if (shouldSkip(step, context)) {
     console.log(
       `--- step ${index + 1}/${workflow.steps.length}: ${step.id} [skipped] ---`,
     );
-
-    // Emit skipped step events
-    const prefix = buildPrefix(context.nestingPath, step.id);
-    context.auditLogger?.emit({
-      timestamp: new Date().toISOString(),
-      prefix,
-      type: 'step_start',
-      data: {
-        context: {
-          params: { ...context.params },
-          capturedVariables: { ...context.capturedVariables },
-        },
-      },
-    });
-    context.auditLogger?.emit({
-      timestamp: new Date().toISOString(),
-      prefix,
-      type: 'step_end',
-      data: {
-        outcome: 'skipped',
-        skip_if: step.skip_if,
-        duration_ms: 0,
-      },
-    });
-
-    return true;
+    emitSkippedStepEvents(step, context);
+    return 'continue';
   }
 
   const stepType = getStepType(step);
@@ -452,20 +457,26 @@ async function dispatchStep(
     stateDir,
     result.loopResult,
   );
-  return handleOutcome(result.outcome, step, stepType, context, promptUser);
+  const cont = await handleOutcome(
+    result.outcome,
+    step,
+    stepType,
+    context,
+    promptUser,
+  );
+  if (cont) return 'continue';
+  return result.outcome === 'aborted' ? 'stopped' : 'halt';
 }
 
-function getStepType(
-  step: Step,
-): 'shell' | 'agent' | 'loop' | 'sub-workflow' | 'group' {
+type StepType = 'shell' | 'agent' | 'loop' | 'sub-workflow' | 'group';
+function getStepType(step: Step): StepType {
   if (step.command) return 'shell';
-  if (step.prompt || step.mode === 'interactive' || step.mode === 'headless') {
+  if (step.prompt || step.mode === 'interactive' || step.mode === 'headless')
     return 'agent';
-  }
   if (step.loop && step.steps) return 'loop';
   if (step.workflow) return 'sub-workflow';
   if (step.steps) return 'group';
-  return 'shell'; // fallback
+  return 'shell';
 }
 
 async function executeGroupStepInRunner(

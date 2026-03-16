@@ -10,7 +10,7 @@ import {
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runWorkflow } from '../src/runner.ts';
+import { WorkflowResult, runWorkflow } from '../src/runner.ts';
 import type { Workflow } from '../src/schema.ts';
 
 function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
@@ -95,7 +95,7 @@ describe('loop state tracking', () => {
       stateDir: testStateDir,
     });
 
-    expect(result).toBe(false);
+    expect(result).toBe(WorkflowResult.Failed);
 
     const stateFile = join(testStateDir, 'baton-state.json');
     expect(existsSync(stateFile)).toBe(true);
@@ -129,7 +129,7 @@ describe('loop state tracking', () => {
       stateDir: testStateDir,
     });
 
-    expect(result).toBe(false);
+    expect(result).toBe(WorkflowResult.Failed);
 
     const stateFile = join(testStateDir, 'baton-state.json');
     expect(existsSync(stateFile)).toBe(true);

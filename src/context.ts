@@ -20,6 +20,18 @@ export interface ExecutionContext {
   workflowFile: string;
   engine: Engine | null;
   auditLogger: AuditLogger | null;
+
+  /** Set by sub-workflow executor: child step progress for state persistence */
+  lastSubWorkflowChild?: SubWorkflowChildState | null;
+  /** Set by runner on resume: child state to restore inside a sub-workflow */
+  resumeChildState?: SubWorkflowChildState | null;
+}
+
+export interface SubWorkflowChildState {
+  stepId: string;
+  sessionIds: Record<string, string>;
+  capturedVariables: Record<string, string>;
+  child?: SubWorkflowChildState | null;
 }
 
 export interface RootContextOptions {

@@ -94,9 +94,16 @@ steps:
       }),
     );
 
-    // resumeWorkflow should handle the nested state
-    // For now, it should at least not crash on the state structure
     await resumeWorkflow(stateFile);
+
+    // Verify: child-step-1 was skipped (only child-step-2 and step-after ran)
+    // Spawn calls: child-step-2 ("echo child-2") then step-after ("echo after")
+    const commands = spawnSpy.mock.calls.map(
+      (call) => (call[0] as string[])[2],
+    );
+    expect(commands).not.toContain('echo "child-1"');
+    expect(commands).toContain('echo "child-2"');
+    expect(commands).toContain('echo "after"');
   });
 
   it('fails with descriptive error when sub-workflow step no longer exists', async () => {

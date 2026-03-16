@@ -28,12 +28,39 @@ function buildNestingPrefix(nestingPath: NestingSegment[]): string {
   return `[${tokens.join(', ')}]`;
 }
 
+/** Record child step progress on the parent context for state persistence. */
+function recordChildProgress(
+  childContext: ExecutionContext,
+  childStepId: string,
+): void {
+  const parentCtx = childContext.parentContext;
+  if (!parentCtx) return;
+
+  parentCtx.lastSubWorkflowChild = {
+    stepId: childStepId,
+    sessionIds: { ...childContext.sessionIds },
+    capturedVariables: { ...childContext.capturedVariables },
+    child: childContext.lastSubWorkflowChild ?? null,
+  };
+}
+
 /** Execute the child steps of a sub-workflow and return the outcome. */
 async function executeChildSteps(
   workflow: Workflow,
   childContext: ExecutionContext,
+  startFromStepId?: string,
 ): Promise<StepOutcome> {
+  let reached = !startFromStepId;
+
   for (const childStep of workflow.steps) {
+    if (!reached) {
+      if (childStep.id === startFromStepId) {
+        reached = true;
+      } else {
+        continue;
+      }
+    }
+
     if (shouldSkip(childStep, childContext)) {
       const prefix = buildPrefix(childContext.nestingPath, childStep.id);
       childContext.auditLogger?.emit({
@@ -61,6 +88,7 @@ async function executeChildSteps(
     }
 
     const stepOutcome = await dispatchSubWorkflowChild(childStep, childContext);
+    recordChildProgress(childContext, childStep.id);
 
     if (stepOutcome === 'aborted') {
       return 'aborted';
@@ -73,6 +101,23 @@ async function executeChildSteps(
     }
   }
   return 'success';
+}
+
+/** Consume resume state from parent and apply to child context. */
+function applyResumeState(
+  parentContext: ExecutionContext,
+  childContext: ExecutionContext,
+): string | undefined {
+  const resumeChild = parentContext.resumeChildState;
+  parentContext.resumeChildState = undefined;
+  if (!resumeChild) return undefined;
+
+  Object.assign(childContext.sessionIds, resumeChild.sessionIds);
+  Object.assign(childContext.capturedVariables, resumeChild.capturedVariables);
+  if (resumeChild.child) {
+    childContext.resumeChildState = resumeChild.child;
+  }
+  return resumeChild.stepId;
 }
 
 /**
@@ -133,6 +178,8 @@ export async function executeSubWorkflowStep(
     subWorkflowName: workflow.name,
   });
 
+  const startFromStepId = applyResumeState(parentContext, childContext);
+
   const childPrefix = buildNestingPrefix(childContext.nestingPath);
   let outcome: StepOutcome;
   try {
@@ -141,6 +188,7 @@ export async function executeSubWorkflowStep(
       workflowPath,
       childContext,
       childPrefix,
+      startFromStepId,
     );
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -176,6 +224,7 @@ async function executeSubWorkflowBody(
   workflowPath: string,
   childContext: ExecutionContext,
   childPrefix: string,
+  startFromStepId?: string,
 ): Promise<StepOutcome> {
   const subWorkflowStartTime = Date.now();
 
@@ -195,7 +244,11 @@ async function executeSubWorkflowBody(
 
   console.log(`  sub-workflow: ${workflow.name} (${workflowPath})`);
 
-  const outcome = await executeChildSteps(workflow, childContext);
+  const outcome = await executeChildSteps(
+    workflow,
+    childContext,
+    startFromStepId,
+  );
 
   childContext.auditLogger?.emit({
     timestamp: new Date().toISOString(),

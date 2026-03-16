@@ -10,7 +10,7 @@ import {
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runWorkflow } from '../src/runner.ts';
+import { WorkflowResult, runWorkflow } from '../src/runner.ts';
 import type { Workflow } from '../src/schema.ts';
 
 function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
@@ -94,7 +94,7 @@ describe('dispatcher: loop steps', () => {
       stateDir: testStateDir,
     });
 
-    expect(result).toBe(true);
+    expect(result).toBe(WorkflowResult.Success);
     // 1 call for loop body (breaks on first iteration) + 1 for after-loop
     expect(spawnSpy).toHaveBeenCalledTimes(2);
   });
@@ -128,7 +128,7 @@ describe('dispatcher: loop steps', () => {
       stateDir: testStateDir,
     });
 
-    expect(result).toBe(false);
+    expect(result).toBe(WorkflowResult.Failed);
     // 2 iterations of loop body, no after-loop
     expect(spawnSpy).toHaveBeenCalledTimes(2);
   });
@@ -181,7 +181,7 @@ describe('dispatcher: bare groups', () => {
       stateDir: testStateDir,
     });
 
-    expect(result).toBe(true);
+    expect(result).toBe(WorkflowResult.Success);
     expect(spawnSpy).toHaveBeenCalledTimes(2);
   });
 
@@ -211,7 +211,7 @@ describe('dispatcher: bare groups', () => {
       stateDir: testStateDir,
     });
 
-    expect(result).toBe(false);
+    expect(result).toBe(WorkflowResult.Failed);
     // Only 2 children run (child3 skipped because child2 failed)
     expect(spawnSpy).toHaveBeenCalledTimes(2);
   });

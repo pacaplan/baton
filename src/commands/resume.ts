@@ -4,7 +4,7 @@ import type { Command } from 'commander';
 import type { Engine } from '../engine.ts';
 import { createEngine } from '../engine.ts';
 import { loadWorkflow } from '../loader.ts';
-import { runWorkflow } from '../runner.ts';
+import { runWorkflow, WorkflowResult } from '../runner.ts';
 import type { Workflow } from '../schema.ts';
 import type { NestedStepState } from '../state.ts';
 import { computeWorkflowHash, readState } from '../state.ts';
@@ -113,17 +113,20 @@ export async function resumeWorkflow(stateFilePath: string): Promise<void> {
   const stateDir = dirname(resolvedPath);
   const sessionIds = resolveSessionIds(state.currentStep, state.sessionIds);
   const capturedVariables = resolveCapturedVariables(state.currentStep);
+  const childState =
+    typeof state.currentStep === 'string' ? null : state.currentStep.child;
 
-  const success = await runWorkflow(workflow, state.params, {
+  const result = await runWorkflow(workflow, state.params, {
     from: stepId,
     workflowFile,
     stateDir,
     engine,
     sessionIds,
     capturedVariables,
+    childState,
   });
 
-  if (!success) {
+  if (result === WorkflowResult.Failed) {
     process.exit(1);
   }
 }
