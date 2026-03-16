@@ -3,7 +3,13 @@ import type { Workflow } from './schema.ts';
 
 export interface Engine {
   getStateDir?(params: Record<string, string>): string;
-  validateWorkflow?(workflow: Workflow, params: Record<string, string>): void;
+  validateWorkflow?(
+    workflow: Workflow,
+    params: Record<string, string>,
+    workflowFile?: string,
+  ): void;
+  /** Returns true when initial validation was inconclusive (e.g. resource not yet created). */
+  needsDeferredValidation?(): boolean;
   enrichPrompt?(
     stepId: string,
     params: Record<string, string>,

@@ -10,7 +10,7 @@ import { executeAgentStep } from './agent.ts';
 import { executeLoopStep } from './loop.ts';
 import { executeShellStep } from './shell.ts';
 
-type StepOutcome = 'success' | 'failed';
+type StepOutcome = 'success' | 'failed' | 'aborted';
 
 /** Build a prefix string from a nesting path (without appending an extra step). */
 function buildNestingPrefix(nestingPath: NestingSegment[]): string {
@@ -61,6 +61,10 @@ async function executeChildSteps(
     }
 
     const stepOutcome = await dispatchSubWorkflowChild(childStep, childContext);
+
+    if (stepOutcome === 'aborted') {
+      return 'aborted';
+    }
 
     childContext.lastStepOutcome = stepOutcome;
 
@@ -270,8 +274,7 @@ async function dispatchSubWorkflowChild(
   }
 
   if (step.prompt || step.mode === 'interactive' || step.mode === 'headless') {
-    const outcome = await executeAgentStep(step, context);
-    return outcome === 'aborted' ? 'failed' : outcome;
+    return executeAgentStep(step, context);
   }
 
   throw new Error(`Unknown step type in sub-workflow step "${step.id}"`);
@@ -287,6 +290,9 @@ async function executeGroupInSubWorkflow(
     }
 
     const outcome = await dispatchSubWorkflowChild(childStep, context);
+    if (outcome === 'aborted') {
+      return 'aborted';
+    }
     context.lastStepOutcome = outcome;
     if (outcome === 'failed' && !childStep.continue_on_failure) {
       return 'failed';

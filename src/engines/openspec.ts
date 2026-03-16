@@ -1,5 +1,6 @@
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { Engine } from '../engine.ts';
+import { loadWorkflow } from '../loader.ts';
 import type { Workflow } from '../schema.ts';
 
 interface OpenSpecArtifact {
@@ -119,18 +120,50 @@ function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
   return lines.join('\n');
 }
 
-export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
+/** Recursively collect step IDs from a workflow and its sub-workflows. */
+function collectAllStepIds(
+  workflow: Workflow,
+  workflowFile?: string,
+  visited: Set<string> = new Set(),
+): Set<string> {
+  const ids = new Set<string>();
+  for (const step of workflow.steps) {
+    ids.add(step.id);
+    if (step.workflow && workflowFile && !step.workflow.includes('{{')) {
+      const parentDir = dirname(workflowFile);
+      const subPath = resolve(parentDir, step.workflow);
+      if (visited.has(subPath)) {
+        throw new Error(`Circular sub-workflow reference detected: ${subPath}`);
+      }
+      visited.add(subPath);
+      try {
+        const subWorkflow = loadWorkflow(subPath, { isSubWorkflow: true });
+        for (const id of collectAllStepIds(subWorkflow, subPath, visited)) {
+          ids.add(id);
+        }
+      } finally {
+        visited.delete(subPath);
+      }
+    }
+  }
+  return ids;
+}
+
+function validateEngineConfig(config: Record<string, unknown>): string {
   const changeParam = config.change_param;
   if (typeof changeParam !== 'string' || !changeParam) {
     throw new Error('OpenSpec engine requires "change_param" in engine config');
   }
-
-  // Verify openspec CLI is available
   if (!Bun.which('openspec')) {
     throw new Error(
       'openspec CLI not found. Ensure "openspec" is installed and on your PATH.',
     );
   }
+  return changeParam;
+}
+
+export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
+  const changeParam = validateEngineConfig(config);
 
   // Artifact ID set — populated lazily when params become available
   let artifactIds: Set<string> | null = null;
@@ -148,12 +181,16 @@ export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
       return `openspec/changes/${changeName}/`;
     },
 
-    validateWorkflow(workflow: Workflow, params: Record<string, string>): void {
+    validateWorkflow(
+      workflow: Workflow,
+      params: Record<string, string>,
+      workflowFile?: string,
+    ): void {
       const changeName = getChangeName(changeParam, params);
       artifactIds = tryLoadArtifactIds(changeName);
       if (!artifactIds) return;
 
-      const stepIds = new Set(workflow.steps.map((s) => s.id));
+      const stepIds = collectAllStepIds(workflow, workflowFile);
       const unmatched = [...artifactIds].filter((id) => !stepIds.has(id));
 
       if (unmatched.length > 0) {
@@ -161,6 +198,10 @@ export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
           `Workflow is missing steps for openspec artifacts: ${unmatched.join(', ')}`,
         );
       }
+    },
+
+    needsDeferredValidation(): boolean {
+      return artifactIds === null;
     },
 
     enrichPrompt(

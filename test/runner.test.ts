@@ -224,7 +224,7 @@ describe('runWorkflow with engine', () => {
     await runWorkflow(wf, {}, { workflowFile: 'test.yaml', stateDir: testStateDir, engine });
 
     expect(validateWorkflow).toHaveBeenCalledTimes(1);
-    expect(validateWorkflow).toHaveBeenCalledWith(wf, {});
+    expect(validateWorkflow).toHaveBeenCalledWith(wf, {}, 'test.yaml');
   });
 
   it('aborts when validateWorkflow throws', async () => {

@@ -14,6 +14,7 @@ import { shouldSkip } from './shared/flow-control.ts';
 import {
   computeWorkflowHash,
   deleteState,
+  getStateFilePath,
   type NestedStepState,
   type RunState,
   writeState,
@@ -175,6 +176,28 @@ async function executeStepLoop(
       promptUser,
     );
     if (!shouldContinue) return false;
+
+    // Re-run deferred engine validation after the first step of a fresh run.
+    // The first step may create resources (e.g. openspec change) that enable
+    // validation which was skipped at startup.
+    if (
+      i === 0 &&
+      startIndex === 0 &&
+      context.engine?.needsDeferredValidation?.() &&
+      context.engine.validateWorkflow
+    ) {
+      try {
+        context.engine.validateWorkflow(
+          workflow,
+          context.params,
+          context.workflowFile,
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.log(`\nbaton: ${message}`);
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -198,7 +221,7 @@ export async function runWorkflow(
   // no audit log file is created (per spec)
   validateParams(workflow, params);
   if (engine?.validateWorkflow) {
-    engine.validateWorkflow(workflow, params);
+    engine.validateWorkflow(workflow, params, workflowFile);
   }
 
   const startIndex = resolveStartIndex(workflow, from);
@@ -247,6 +270,9 @@ export async function runWorkflow(
     if (runSuccess) {
       deleteState(stateDir);
       console.log('baton: workflow complete');
+    } else {
+      const stateFilePath = getStateFilePath(stateDir);
+      console.log(`baton: to resume: baton resume ${stateFilePath}`);
     }
     return runSuccess;
   } finally {
