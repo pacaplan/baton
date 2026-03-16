@@ -33,23 +33,17 @@ steps:
 
   - id: design
     mode: interactive
-    session: new
+    session: resume
     prompt: |
       Help me design the change.
       You MUST use the flokay:design skill.
 
   - id: tasks
-    mode: headless
-    session: new
+    mode: interactive
+    session: resume
     prompt: |
       Help me plan tasks for the change.
       You MUST use the flokay:plan-tasks skill.
 
   - id: review
-    mode: headless
-    session: resume
-    prompt: |
-      Review the change and make fixes.
-      You MUST use the gauntlet-run skill.
-
-      Then write review.md summarizing the results.
+    workflow: run-gauntlet.yaml
