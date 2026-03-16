@@ -25,6 +25,8 @@ export interface ExecutionContext {
   lastSubWorkflowChild?: SubWorkflowChildState | null;
   /** Set by runner on resume: child state to restore inside a sub-workflow */
   resumeChildState?: SubWorkflowChildState | null;
+  /** Callback to flush current state to disk (set by runner for sub-workflow progress) */
+  flushState?: () => void;
 }
 
 export interface SubWorkflowChildState {

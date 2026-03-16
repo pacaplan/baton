@@ -87,7 +87,13 @@ async function executeChildSteps(
       continue;
     }
 
+    // Flush state BEFORE running the step so that if the process is killed
+    // mid-step, resume will re-run this step (not an earlier one).
+    recordChildProgress(childContext, childStep.id);
+    childContext.parentContext?.flushState?.();
+
     const stepOutcome = await dispatchSubWorkflowChild(childStep, childContext);
+    // Update progress with final sessionIds/capturedVariables after completion
     recordChildProgress(childContext, childStep.id);
 
     if (stepOutcome === 'aborted') {
