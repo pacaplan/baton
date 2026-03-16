@@ -11,6 +11,7 @@ export const LoopSchema = z
     max: z.number().int().positive().optional(),
     over: z.string().optional(),
     as: z.string().optional(),
+    require_matches: z.boolean().optional(),
   })
   .superRefine((loop, ctx) => {
     const hasMax = loop.max !== undefined;

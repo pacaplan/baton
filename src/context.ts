@@ -97,6 +97,7 @@ export interface SubWorkflowContextOptions {
   params: Record<string, string>;
   workflowFile: string;
   subWorkflowName?: string;
+  engine?: Engine | null;
 }
 
 export function createSubWorkflowContext(
@@ -116,7 +117,7 @@ export function createSubWorkflowContext(
     nestingPath: [...parent.nestingPath, segment],
     parentContext: parent,
     workflowFile: options.workflowFile,
-    engine: parent.engine,
+    engine: options.engine === undefined ? parent.engine : options.engine,
     auditLogger: parent.auditLogger,
   };
 }
