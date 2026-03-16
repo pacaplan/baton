@@ -100,6 +100,11 @@ async function executeChildSteps(
       return 'failed';
     }
   }
+  if (startFromStepId && !reached) {
+    throw new Error(
+      `Resume step "${startFromStepId}" not found in sub-workflow`,
+    );
+  }
   return 'success';
 }
 
