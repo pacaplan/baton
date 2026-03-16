@@ -19,26 +19,37 @@ steps:
     mode: interactive
     session: new
     prompt: |
-      /flokay:propose. Before doing any research, ask the user to describe what this change is about and what they want to accomplish.
+      Help me write a change proposal.
+      You MUST use the flokay:propose skill.
+      
+      Before doing anything else, ask me to describe what this change is about and what I want to accomplish.
 
   - id: specs
     mode: interactive
     session: resume
-    prompt: /flokay:spec
+    prompt: |
+      Help me write the change spec.
+      You MUST use the flokay:spec skill.
 
   - id: design
     mode: interactive
     session: new
-    prompt: /flokay:design
+    prompt: |
+      Help me design the change.
+      You MUST use the flokay:design skill.
 
   - id: tasks
     mode: headless
     session: new
-    prompt: /flokay:plan-tasks
+    prompt: |
+      Help me plan tasks for the change.
+      You MUST use the flokay:plan-tasks skill.
 
   - id: review
     mode: headless
     session: resume
     prompt: |
-      /gauntlet-run review the change.
+      Review the change and make fixes.
+      You MUST use the gauntlet-run skill.
+
       Then write review.md summarizing the results.

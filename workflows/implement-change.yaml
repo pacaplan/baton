@@ -28,4 +28,6 @@ steps:
   - id: finalize
     mode: headless
     session: resume
-    prompt: /flokay:finalize-pr
+    prompt: |
+      Help me finalize the PR.
+      You MUST use the flokay:finalize-pr skill.
