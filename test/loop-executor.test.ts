@@ -252,6 +252,30 @@ describe('LoopExecutor: for-each loops', () => {
     expect(spawnSpy).toHaveBeenCalledTimes(0);
   });
 
+  it('fails when require_matches is set and glob matches zero files', async () => {
+    spyOn(console, 'error').mockImplementation(() => {});
+    const step = makeStep({
+      loop: {
+        over: join(testDir, '*.nonexistent'),
+        as: 'task_file',
+        require_matches: true,
+      },
+      steps: [
+        {
+          id: 'body',
+          command: 'echo {{task_file}}',
+          session: 'new',
+        },
+      ],
+    });
+    const ctx = makeCtx();
+
+    const result = await executeLoopStep(step, ctx);
+
+    expect(result.outcome).toBe('failed');
+    expect(spawnSpy).toHaveBeenCalledTimes(0);
+  });
+
   it('interpolates params in glob pattern', async () => {
     const subDir = join(testDir, 'mychange');
     mkdirSync(subDir, { recursive: true });

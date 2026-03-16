@@ -41,6 +41,7 @@ export async function executeLoopStep(
       steps,
       context,
       options,
+      loop.require_matches,
     );
   }
 
@@ -124,20 +125,12 @@ async function executeCountedLoop(
   return { outcome: 'exhausted', lastIteration };
 }
 
-async function executeForEachLoop(
-  stepId: string,
-  overPattern: string,
-  asVar: string,
-  steps: Step[],
+function emitForEachStart(
   context: ExecutionContext,
-  options: LoopExecuteOptions,
-): Promise<LoopResult> {
-  const pattern = interpolate(overPattern, context);
-  const matches = await expandGlob(pattern);
-
-  const prefix = buildPrefix(context.nestingPath, stepId);
-  const startTime = Date.now();
-
+  prefix: string,
+  pattern: string,
+  matches: string[],
+): void {
   context.auditLogger?.emit({
     timestamp: new Date().toISOString(),
     prefix,
@@ -152,10 +145,33 @@ async function executeForEachLoop(
       },
     },
   });
+}
+
+async function executeForEachLoop(
+  stepId: string,
+  overPattern: string,
+  asVar: string,
+  steps: Step[],
+  context: ExecutionContext,
+  options: LoopExecuteOptions,
+  requireMatches?: boolean,
+): Promise<LoopResult> {
+  const pattern = interpolate(overPattern, context);
+  const matches = await expandGlob(pattern);
+  const prefix = buildPrefix(context.nestingPath, stepId);
+  const startTime = Date.now();
+
+  emitForEachStart(context, prefix, pattern, matches);
 
   if (matches.length === 0) {
-    emitLoopStepEnd(context, prefix, startTime, 0, false, 'success');
-    return { outcome: 'success', lastIteration: -1 };
+    return handleEmptyMatches(
+      stepId,
+      pattern,
+      requireMatches,
+      context,
+      prefix,
+      startTime,
+    );
   }
 
   const startIteration = options.resumeFromIteration ?? 0;
@@ -210,6 +226,25 @@ async function executeForEachLoop(
     'success',
   );
   return { outcome: 'success', lastIteration };
+}
+
+function handleEmptyMatches(
+  stepId: string,
+  pattern: string,
+  requireMatches: boolean | undefined,
+  context: ExecutionContext,
+  prefix: string,
+  startTime: number,
+): LoopResult {
+  if (requireMatches) {
+    console.error(
+      `baton: for-each loop "${stepId}" matched 0 files for pattern: ${pattern}`,
+    );
+    emitLoopStepEnd(context, prefix, startTime, 0, false, 'failed');
+    return { outcome: 'failed', lastIteration: -1 };
+  }
+  emitLoopStepEnd(context, prefix, startTime, 0, false, 'success');
+  return { outcome: 'success', lastIteration: -1 };
 }
 
 function emitLoopStepEnd(

@@ -2,6 +2,7 @@ import { dirname, resolve } from 'node:path';
 import { buildPrefix } from '../audit.ts';
 import type { ExecutionContext, NestingSegment } from '../context.ts';
 import { createSubWorkflowContext } from '../context.ts';
+import { createEngine } from '../engine.ts';
 import { loadWorkflow } from '../loader.ts';
 import type { Step, Workflow } from '../schema.ts';
 import { shouldSkip } from '../shared/flow-control.ts';
@@ -125,6 +126,36 @@ function applyResumeState(
   return resumeChild.stepId;
 }
 
+/** Emit a step_end audit event for a sub-workflow step. */
+function emitStepEnd(
+  context: ExecutionContext,
+  prefix: string,
+  startTime: number,
+  outcome: string,
+  error?: string,
+): void {
+  const data: Record<string, unknown> = {
+    outcome,
+    duration_ms: Date.now() - startTime,
+  };
+  if (error) data.error = error;
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_end',
+    data,
+  });
+}
+
+/** Resolve engine for a sub-workflow: use its own config or null. */
+function resolveChildEngine(
+  workflow: Workflow,
+): import('../engine.ts').Engine | null {
+  return workflow.engine
+    ? createEngine(workflow.engine as Record<string, unknown>)
+    : null;
+}
+
 /**
  * Execute a sub-workflow step.
  *
@@ -162,17 +193,13 @@ export async function executeSubWorkflowStep(
     resolvedParams = resolveParams(step.params, parentContext);
     validateSubWorkflowParams(workflow, resolvedParams);
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    parentContext.auditLogger?.emit({
-      timestamp: new Date().toISOString(),
+    emitStepEnd(
+      parentContext,
       prefix,
-      type: 'step_end',
-      data: {
-        outcome: 'failed',
-        error,
-        duration_ms: Date.now() - startTime,
-      },
-    });
+      startTime,
+      'failed',
+      err instanceof Error ? err.message : String(err),
+    );
     throw err;
   }
 
@@ -181,11 +208,12 @@ export async function executeSubWorkflowStep(
     params: resolvedParams,
     workflowFile: workflowPath,
     subWorkflowName: workflow.name,
+    engine: resolveChildEngine(workflow),
   });
 
   const startFromStepId = applyResumeState(parentContext, childContext);
-
   const childPrefix = buildNestingPrefix(childContext.nestingPath);
+
   let outcome: StepOutcome;
   try {
     outcome = await executeSubWorkflowBody(
@@ -196,30 +224,17 @@ export async function executeSubWorkflowStep(
       startFromStepId,
     );
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    parentContext.auditLogger?.emit({
-      timestamp: new Date().toISOString(),
+    emitStepEnd(
+      parentContext,
       prefix,
-      type: 'step_end',
-      data: {
-        outcome: 'failed',
-        error,
-        duration_ms: Date.now() - startTime,
-      },
-    });
+      startTime,
+      'failed',
+      err instanceof Error ? err.message : String(err),
+    );
     throw err;
   }
 
-  parentContext.auditLogger?.emit({
-    timestamp: new Date().toISOString(),
-    prefix,
-    type: 'step_end',
-    data: {
-      outcome,
-      duration_ms: Date.now() - startTime,
-    },
-  });
-
+  emitStepEnd(parentContext, prefix, startTime, outcome);
   return outcome;
 }
 
