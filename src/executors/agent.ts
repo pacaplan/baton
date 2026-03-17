@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Subprocess } from 'bun';
+import ora from 'ora';
 import { buildPrefix } from '../audit.ts';
 import type { ExecutionContext } from '../context.ts';
 import type { Step } from '../schema.ts';
@@ -76,6 +77,7 @@ export async function executeAgentStep(
 
   const args = buildArgsFromResolved(step, prompt, sessionId);
   logStepMode(step);
+  logHeadlessPrompt(step, prompt);
   cleanSignalFile();
 
   const spawnTime = Date.now();
@@ -225,6 +227,18 @@ function logStepMode(step: Step): void {
   }
 }
 
+/** Print the resolved prompt (indented) for headless steps when opted in. */
+function logHeadlessPrompt(step: Step, prompt: string): void {
+  if (step.mode === 'headless' && process.env.BATON_SHOW_PROMPT === '1') {
+    console.log(
+      prompt
+        .split('\n')
+        .map((l) => `  ${l}`)
+        .join('\n'),
+    );
+  }
+}
+
 /**
  * Run a headless subprocess with SIGINT handling.
  * Registers a handler before spawn, removes it after exit.
@@ -232,7 +246,10 @@ function logStepMode(step: Step): void {
 async function runHeadlessWithSigint(
   proc: Subprocess,
 ): Promise<{ outcome: StepOutcome; exitCode: number }> {
+  const spinner = ora('agent running...').start();
+
   const sigintHandler = () => {
+    spinner.stop();
     proc.kill();
   };
 
@@ -242,6 +259,7 @@ async function runHeadlessWithSigint(
     const exitCode = await proc.exited;
     return { outcome: exitCode === 0 ? 'success' : 'failed', exitCode };
   } finally {
+    spinner.stop();
     process.removeListener('SIGINT', sigintHandler);
   }
 }
