@@ -1,6 +1,5 @@
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import type { Engine } from '../engine.ts';
-import { loadWorkflow } from '../loader.ts';
 import type { Workflow } from '../schema.ts';
 
 interface OpenSpecArtifact {
@@ -95,21 +94,32 @@ function resolveTemplatePath(data: OpenSpecInstructionsOutput): string {
   );
 }
 
-function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
+function buildEnrichmentBlock(
+  data: OpenSpecInstructionsOutput,
+  options?: { sessionStrategy?: string },
+): string {
   const outputPath = join(data.changeDir, data.outputPath);
   const templatePath = resolveTemplatePath(data);
+  const isResumed =
+    options?.sessionStrategy === 'resume' ||
+    options?.sessionStrategy === 'inherit';
 
   const lines = [
     `**Output path:** ${outputPath}`,
     `**Template:** ${templatePath}`,
   ];
 
-  if (data.dependencies.length > 0) {
+  // Skip dependencies for resumed sessions — the agent already has context
+  if (!isResumed && data.dependencies.length > 0) {
     lines.push('', '**Dependencies:**');
     for (const dep of data.dependencies) {
       const absPath = join(data.changeDir, dep.path);
       lines.push(`- ${absPath} — ${dep.description}`);
     }
+  }
+
+  if (data.instruction) {
+    lines.push('', data.instruction.trim());
   }
 
   lines.push(
@@ -120,50 +130,18 @@ function buildEnrichmentBlock(data: OpenSpecInstructionsOutput): string {
   return lines.join('\n');
 }
 
-/** Recursively collect step IDs from a workflow and its sub-workflows. */
-function collectAllStepIds(
-  workflow: Workflow,
-  workflowFile?: string,
-  visited: Set<string> = new Set(),
-): Set<string> {
-  const ids = new Set<string>();
-  for (const step of workflow.steps) {
-    ids.add(step.id);
-    if (step.workflow && workflowFile && !step.workflow.includes('{{')) {
-      const parentDir = dirname(workflowFile);
-      const subPath = resolve(parentDir, step.workflow);
-      if (visited.has(subPath)) {
-        throw new Error(`Circular sub-workflow reference detected: ${subPath}`);
-      }
-      visited.add(subPath);
-      try {
-        const subWorkflow = loadWorkflow(subPath, { isSubWorkflow: true });
-        for (const id of collectAllStepIds(subWorkflow, subPath, visited)) {
-          ids.add(id);
-        }
-      } finally {
-        visited.delete(subPath);
-      }
-    }
-  }
-  return ids;
-}
-
-function validateEngineConfig(config: Record<string, unknown>): string {
+export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
   const changeParam = config.change_param;
   if (typeof changeParam !== 'string' || !changeParam) {
     throw new Error('OpenSpec engine requires "change_param" in engine config');
   }
+
+  // Verify openspec CLI is available
   if (!Bun.which('openspec')) {
     throw new Error(
       'openspec CLI not found. Ensure "openspec" is installed and on your PATH.',
     );
   }
-  return changeParam;
-}
-
-export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
-  const changeParam = validateEngineConfig(config);
 
   // Artifact ID set — populated lazily when params become available
   let artifactIds: Set<string> | null = null;
@@ -181,16 +159,12 @@ export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
       return `openspec/changes/${changeName}/`;
     },
 
-    validateWorkflow(
-      workflow: Workflow,
-      params: Record<string, string>,
-      workflowFile?: string,
-    ): void {
+    validateWorkflow(workflow: Workflow, params: Record<string, string>): void {
       const changeName = getChangeName(changeParam, params);
       artifactIds = tryLoadArtifactIds(changeName);
       if (!artifactIds) return;
 
-      const stepIds = collectAllStepIds(workflow, workflowFile);
+      const stepIds = new Set(workflow.steps.map((s) => s.id));
       const unmatched = [...artifactIds].filter((id) => !stepIds.has(id));
 
       if (unmatched.length > 0) {
@@ -200,13 +174,10 @@ export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
       }
     },
 
-    needsDeferredValidation(): boolean {
-      return artifactIds === null;
-    },
-
     enrichPrompt(
       stepId: string,
       params: Record<string, string>,
+      options?: { sessionStrategy?: string },
     ): string | undefined {
       const changeName = getChangeName(changeParam, params);
       const ids = ensureArtifactIds(changeName);
@@ -223,7 +194,7 @@ export function createOpenSpecEngine(config: Record<string, unknown>): Engine {
         '--json',
       ]);
       const data: OpenSpecInstructionsOutput = JSON.parse(raw);
-      return buildEnrichmentBlock(data);
+      return buildEnrichmentBlock(data, options);
     },
 
     validateStep(stepId: string, params: Record<string, string>): boolean {

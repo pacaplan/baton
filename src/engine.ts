@@ -13,6 +13,7 @@ export interface Engine {
   enrichPrompt?(
     stepId: string,
     params: Record<string, string>,
+    options?: { sessionStrategy?: string },
   ): string | undefined;
   validateStep?(stepId: string, params: Record<string, string>): boolean;
 }
