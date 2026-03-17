@@ -12,6 +12,14 @@ import type { ExecutionContext } from '../src/context.ts';
 import type { AuditEvent } from '../src/audit.ts';
 import type { Step } from '../src/schema.ts';
 
+// Mock ora before agent.ts is imported
+const mockSpinner = {
+  start: mock(function () { return mockSpinner; }),
+  stop: mock(function () { return mockSpinner; }),
+};
+const mockOra = mock((_text?: string) => mockSpinner);
+mock.module('ora', () => ({ default: mockOra }));
+
 function makeCtx(
   overrides: Partial<Parameters<typeof createRootContext>[0]> = {},
 ): ExecutionContext {
@@ -505,5 +513,166 @@ describe('AgentExecutor: audit events', () => {
     // Should not throw
     const outcome = await executeAgentStep(step, ctx);
     expect(outcome).toBe('success');
+  });
+});
+
+describe('AgentExecutor: headless prompt display', () => {
+  let spawnSpy: ReturnType<typeof spyOn>;
+  let logSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    process.env.BATON_SHOW_PROMPT = '1';
+    spawnSpy = spyOn(Bun, 'spawn').mockImplementation(
+      () => makeMockProc(0) as never,
+    );
+    logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    mockSpinner.start.mockClear();
+    mockSpinner.stop.mockClear();
+    mockOra.mockClear();
+  });
+
+  afterEach(() => {
+    delete process.env.BATON_SHOW_PROMPT;
+    spawnSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it('prints indented prompt for headless step when BATON_SHOW_PROMPT=1', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const step = makeStep({ mode: 'headless', prompt: 'Do the thing' });
+    const ctx = makeCtx();
+
+    await executeAgentStep(step, ctx);
+
+    const loggedArgs = logSpy.mock.calls.map((call: unknown[]) => call[0]);
+    expect(loggedArgs).toContain('  Do the thing');
+  });
+
+  it('does not print prompt for interactive step', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const step = makeStep({ mode: 'interactive', prompt: 'Do the thing' });
+    const ctx = makeCtx();
+
+    await executeAgentStep(step, ctx);
+
+    const loggedArgs = logSpy.mock.calls.map((call: unknown[]) => call[0]);
+    // Should not contain the indented prompt
+    const hasIndentedPrompt = loggedArgs.some(
+      (arg: unknown) =>
+        typeof arg === 'string' && arg.includes('  Do the thing'),
+    );
+    expect(hasIndentedPrompt).toBe(false);
+  });
+
+  it('does not print prompt when BATON_SHOW_PROMPT is unset', async () => {
+    delete process.env.BATON_SHOW_PROMPT;
+    const { executeAgentStep } = await importExecutor();
+    const step = makeStep({ mode: 'headless', prompt: 'Do the thing' });
+    const ctx = makeCtx();
+
+    await executeAgentStep(step, ctx);
+
+    const loggedArgs = logSpy.mock.calls.map((call: unknown[]) => call[0]);
+    const hasIndentedPrompt = loggedArgs.some(
+      (arg: unknown) =>
+        typeof arg === 'string' && arg.includes('  Do the thing'),
+    );
+    expect(hasIndentedPrompt).toBe(false);
+  });
+
+  it('prints full multi-line prompt without truncation', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const multiLinePrompt = 'Line one\nLine two\nLine three';
+    const step = makeStep({ mode: 'headless', prompt: multiLinePrompt });
+    const ctx = makeCtx();
+
+    await executeAgentStep(step, ctx);
+
+    const loggedArgs = logSpy.mock.calls.map((call: unknown[]) => call[0]);
+    const expected = '  Line one\n  Line two\n  Line three';
+    expect(loggedArgs).toContain(expected);
+  });
+});
+
+describe('AgentExecutor: headless spinner', () => {
+  let spawnSpy: ReturnType<typeof spyOn>;
+  let logSpy: ReturnType<typeof spyOn>;
+  let processSpy: ReturnType<typeof spyOn>;
+  let removeListenerSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    spawnSpy = spyOn(Bun, 'spawn').mockImplementation(
+      () => makeMockProc(0) as never,
+    );
+    logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    mockSpinner.start.mockClear();
+    mockSpinner.stop.mockClear();
+    mockOra.mockClear();
+  });
+
+  afterEach(() => {
+    spawnSpy.mockRestore();
+    logSpy.mockRestore();
+    processSpy?.mockRestore();
+    removeListenerSpy?.mockRestore();
+  });
+
+  it('starts spinner during headless execution', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const step = makeStep({ mode: 'headless' });
+    const ctx = makeCtx();
+
+    await executeAgentStep(step, ctx);
+
+    expect(mockOra).toHaveBeenCalledWith('agent running...');
+    expect(mockSpinner.start).toHaveBeenCalled();
+  });
+
+  it('stops spinner on step completion', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const step = makeStep({ mode: 'headless' });
+    const ctx = makeCtx();
+
+    await executeAgentStep(step, ctx);
+
+    expect(mockSpinner.stop).toHaveBeenCalled();
+  });
+
+  it('stops spinner before killing process on ctrl-c', async () => {
+    const mockProc = makeMockProc(0);
+    spawnSpy.mockImplementation(() => mockProc as never);
+
+    let sigintHandler: (() => void) | undefined;
+    processSpy = spyOn(process, 'on').mockImplementation(((event: string, handler: () => void) => {
+      if (event === 'SIGINT') {
+        sigintHandler = handler;
+      }
+      return process;
+    }) as typeof process.on);
+    removeListenerSpy = spyOn(process, 'removeListener');
+
+    const { executeAgentStep } = await importExecutor();
+    const step = makeStep({ mode: 'headless' });
+    const ctx = makeCtx();
+
+    await executeAgentStep(step, ctx);
+
+    // Invoke the captured SIGINT handler
+    expect(sigintHandler).toBeDefined();
+    mockSpinner.stop.mockClear();
+    sigintHandler!();
+    expect(mockSpinner.stop).toHaveBeenCalled();
+    expect(mockProc.kill).toHaveBeenCalled();
+  });
+
+  it('does not show spinner for interactive steps', async () => {
+    const { executeAgentStep } = await importExecutor();
+    const step = makeStep({ mode: 'interactive' });
+    const ctx = makeCtx();
+
+    mockOra.mockClear();
+    await executeAgentStep(step, ctx);
+
+    expect(mockOra).not.toHaveBeenCalled();
   });
 });

@@ -13,6 +13,7 @@ import {
 import { executeLoopStep, type LoopResult } from './executors/loop.ts';
 import { executeShellStep } from './executors/shell.ts';
 import { executeSubWorkflowStep } from './executors/sub-workflow.ts';
+import { buildBreadcrumb, printSeparator, printStepHeading } from './format.ts';
 import type { Step, Workflow } from './schema.ts';
 import { shouldSkip } from './shared/flow-control.ts';
 import {
@@ -303,8 +304,8 @@ async function executeByType(
   if (stepType === 'loop') {
     const loopResult = await executeLoopStep(step, context);
     let outcome: StepOutcome = 'failed';
-    if (loopResult.outcome === 'success') {
-      outcome = 'success';
+    if (loopResult.outcome === 'success' || loopResult.outcome === 'aborted') {
+      outcome = loopResult.outcome;
     }
     return { outcome, loopResult };
   }
@@ -436,17 +437,17 @@ async function dispatchStep(
   promptUser: PromptUserFn,
 ): Promise<'continue' | 'stopped' | 'halt'> {
   if (shouldSkip(step, context)) {
-    console.log(
-      `--- step ${index + 1}/${workflow.steps.length}: ${step.id} [skipped] ---`,
-    );
+    const breadcrumb = buildBreadcrumb(context.nestingPath, step.id);
+    printSeparator();
+    printStepHeading(index, workflow.steps.length, breadcrumb, '', true);
     emitSkippedStepEvents(step, context);
     return 'continue';
   }
 
   const stepType = getStepType(step);
-  console.log(
-    `--- step ${index + 1}/${workflow.steps.length}: ${step.id} [${stepType}] ---`,
-  );
+  const breadcrumb = buildBreadcrumb(context.nestingPath, step.id);
+  printSeparator();
+  printStepHeading(index, workflow.steps.length, breadcrumb, stepType, false);
 
   const flush = () =>
     writeStepState(step, context, workflow, workflowHash, stateDir);

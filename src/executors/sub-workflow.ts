@@ -8,7 +8,6 @@ import type { Step, Workflow } from '../schema.ts';
 import { shouldSkip } from '../shared/flow-control.ts';
 import { interpolate } from '../shared/interpolation.ts';
 import { executeAgentStep } from './agent.ts';
-import { executeLoopStep } from './loop.ts';
 import { executeShellStep } from './shell.ts';
 
 type StepOutcome = 'success' | 'failed' | 'aborted';
@@ -343,9 +342,12 @@ async function dispatchSubWorkflowChild(
   }
 
   if (step.loop && step.steps) {
+    // biome-ignore lint/suspicious/noImportCycles: loops and sub-workflows are mutually recursive by design
+    const { executeLoopStep } = await import('./loop.ts');
     const result = await executeLoopStep(step, context);
-    if (result.outcome === 'exhausted') return 'failed';
-    return result.outcome === 'success' ? 'success' : 'failed';
+    if (result.outcome === 'aborted') return 'aborted';
+    if (result.outcome === 'success') return 'success';
+    return 'failed';
   }
 
   if (step.steps && !step.loop) {
