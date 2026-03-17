@@ -5,69 +5,18 @@ agent: claude-code
 params:
   - name: change_name
     required: true
-  - name: idea_file
-    required: false
 
 engine:
   type: openspec
   change_param: change_name
 
 steps:
-  - id: create
-    mode: shell
-    command: openspec new change "{{change_name}}"
-
-  - id: proposal
-    mode: interactive
-    session: new
-    prompt: |
-      /flokay:propose "{{change_name}}"
-      {{file:idea_file}}
-
-  - id: specs
-    mode: interactive
-    session: resume
-    prompt: /flokay:spec
-
-  - id: design
-    mode: interactive
-    session: new
-    prompt: /flokay:design
-
-  - id: tasks
-    mode: headless
-    session: new
-    prompt: /flokay:plan-tasks
-
-  - id: review
-    mode: headless
-    session: resume
-    prompt: |
-      /gauntlet-run review the change.
-      Then write review.md summarizing the results.
+  - id: plan
+    workflow: plan-change.yaml
+    params:
+      change_name: "{{change_name}}"
 
   - id: implement
     workflow: implement-change.yaml
     params:
       change_name: "{{change_name}}"
-
-  - id: verify
-    mode: headless
-    session: new
-    prompt: /gauntlet-run verify the implementation
-
-  - id: archive
-    mode: headless
-    session: resume
-    prompt: |
-      /opsx:archive
-      Always sync delta specs to main specs automatically — do not prompt the user about syncing.
-
-  - id: archive-verify
-    mode: shell
-    command: agent-gauntlet skip
-
-  - id: finalize
-    mode: headless
-    session: resume
-    prompt: /flokay:finalize-pr

@@ -18,7 +18,20 @@ steps:
         mode: headless
         session: inherit
         prompt: |
-          The gauntlet found violations. Fix them:
+          The gauntlet verification found failures. Fix them.
+
+          Fix issues you reasonably agree with or believe the human wants
+          fixed. Skip issues that are purely stylistic or subjective.
+          When you skip, briefly state why.
+
+          For CHECK failures: fix the code following the instructions
+          provided. Re-run the check command shown to verify your fix
+          before moving on. If a fix skill is named, invoke it instead.
+          For REVIEW violations: fix the code, then mark it:
+            agent-gauntlet update-review fix <#> "what you did"
+          To skip a review violation:
+            agent-gauntlet update-review skip <#> "why"
+          Read the full log file if the summary lacks context.
 
           {{gauntlet_output}}
         skip_if: previous_success

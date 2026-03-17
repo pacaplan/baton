@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { join, resolve } from 'node:path';
 import type { Workflow } from '../../src/schema.ts';
 
 let spawnSyncSpy: ReturnType<typeof spyOn>;
@@ -186,6 +187,89 @@ describe('OpenSpecEngine', () => {
       });
 
       expect(() => engine.validateWorkflow(wf, { change_name: 'my-change' })).not.toThrow();
+    });
+
+    it('finds artifact step IDs inside sub-workflows when workflowFile is provided', () => {
+      whichSpy.mockReturnValue('/usr/local/bin/openspec');
+      spawnSyncSpy.mockImplementation(() => mockSyncResult(STATUS_OUTPUT, 0));
+
+      const { createOpenSpecEngine } = require('../../src/engines/openspec.ts');
+      const engine = createOpenSpecEngine({ change_param: 'change_name' });
+
+      // Parent workflow only has a sub-workflow step — artifact IDs are in the child
+      const parentWf: Workflow = {
+        name: 'parent',
+        agent: 'claude-code',
+        params: [],
+        steps: [
+          {
+            id: 'plan',
+            session: 'new' as const,
+            workflow: 'test/fixtures/openspec-sub-workflow.yaml',
+            params: { change_name: '{{change_name}}' },
+          },
+        ],
+      };
+
+      const workflowFile = resolve(join(import.meta.dir, '..', '..', 'parent.yaml'));
+
+      expect(() =>
+        engine.validateWorkflow(parentWf, { change_name: 'my-change' }, workflowFile),
+      ).not.toThrow();
+    });
+
+    it('fails when artifact IDs are not in parent or sub-workflow steps', () => {
+      whichSpy.mockReturnValue('/usr/local/bin/openspec');
+      spawnSyncSpy.mockImplementation(() => mockSyncResult(STATUS_OUTPUT, 0));
+
+      const { createOpenSpecEngine } = require('../../src/engines/openspec.ts');
+      const engine = createOpenSpecEngine({ change_param: 'change_name' });
+
+      // Parent has a sub-workflow but it doesn't contain the artifact IDs
+      const parentWf: Workflow = {
+        name: 'parent',
+        agent: 'claude-code',
+        params: [],
+        steps: [
+          {
+            id: 'plan',
+            session: 'new' as const,
+            workflow: 'test/fixtures/sub-workflow-child.yaml',
+          },
+        ],
+      };
+
+      const workflowFile = resolve(join(import.meta.dir, '..', '..', 'parent.yaml'));
+
+      expect(() =>
+        engine.validateWorkflow(parentWf, { change_name: 'my-change' }, workflowFile),
+      ).toThrow('proposal');
+    });
+  });
+
+  describe('needsDeferredValidation', () => {
+    it('returns true when change does not exist yet', () => {
+      whichSpy.mockReturnValue('/usr/local/bin/openspec');
+      spawnSyncSpy.mockImplementation(() =>
+        mockSyncResult('', 1, "Change 'new-change' not found."),
+      );
+
+      const { createOpenSpecEngine } = require('../../src/engines/openspec.ts');
+      const engine = createOpenSpecEngine({ change_param: 'change_name' });
+
+      engine.validateWorkflow(makeWorkflow(), { change_name: 'new-change' });
+      expect(engine.needsDeferredValidation()).toBe(true);
+    });
+
+    it('returns false after successful validation', () => {
+      whichSpy.mockReturnValue('/usr/local/bin/openspec');
+      spawnSyncSpy.mockImplementation(() => mockSyncResult(STATUS_OUTPUT, 0));
+
+      const { createOpenSpecEngine } = require('../../src/engines/openspec.ts');
+      const engine = createOpenSpecEngine({ change_param: 'change_name' });
+
+      engine.validateWorkflow(makeWorkflow(), { change_name: 'my-change' });
+      expect(engine.needsDeferredValidation()).toBe(false);
     });
   });
 

@@ -3,7 +3,7 @@ import type { Command } from 'commander';
 import type { Engine } from '../engine.ts';
 import { createEngine } from '../engine.ts';
 import { loadWorkflow } from '../loader.ts';
-import { runWorkflow } from '../runner.ts';
+import { runWorkflow, WorkflowResult } from '../runner.ts';
 
 export function registerRunCommand(program: Command): void {
   program
@@ -31,13 +31,13 @@ export function registerRunCommand(program: Command): void {
           engine = createEngine(workflow.engine as Record<string, unknown>);
         }
 
-        const success = await runWorkflow(workflow, params, {
+        const result = await runWorkflow(workflow, params, {
           from: options.from,
           workflowFile: resolve(file),
           engine,
         });
 
-        if (!success) {
+        if (result === WorkflowResult.Failed) {
           process.exit(1);
         }
       },

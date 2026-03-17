@@ -10,7 +10,7 @@ import { executeAgentStep } from './agent.ts';
 import { executeShellStep } from './shell.ts';
 
 export interface LoopResult {
-  outcome: 'success' | 'failed' | 'exhausted';
+  outcome: 'success' | 'failed' | 'exhausted' | 'aborted';
   lastIteration: number;
 }
 
@@ -41,6 +41,7 @@ export async function executeLoopStep(
       steps,
       context,
       options,
+      loop.require_matches,
     );
   }
 
@@ -89,6 +90,17 @@ async function executeCountedLoop(
     const iterResult = await executeIterationWithAudit(steps, iterCtx);
     iterationsCompleted++;
 
+    if (iterResult.aborted) {
+      emitLoopStepEnd(
+        context,
+        prefix,
+        startTime,
+        iterationsCompleted,
+        false,
+        'aborted',
+      );
+      return { outcome: 'aborted', lastIteration: i };
+    }
     if (iterResult.failed) {
       emitLoopStepEnd(
         context,
@@ -124,20 +136,12 @@ async function executeCountedLoop(
   return { outcome: 'exhausted', lastIteration };
 }
 
-async function executeForEachLoop(
-  stepId: string,
-  overPattern: string,
-  asVar: string,
-  steps: Step[],
+function emitForEachStart(
   context: ExecutionContext,
-  options: LoopExecuteOptions,
-): Promise<LoopResult> {
-  const pattern = interpolate(overPattern, context);
-  const matches = await expandGlob(pattern);
-
-  const prefix = buildPrefix(context.nestingPath, stepId);
-  const startTime = Date.now();
-
+  prefix: string,
+  pattern: string,
+  matches: string[],
+): void {
   context.auditLogger?.emit({
     timestamp: new Date().toISOString(),
     prefix,
@@ -152,10 +156,33 @@ async function executeForEachLoop(
       },
     },
   });
+}
+
+async function executeForEachLoop(
+  stepId: string,
+  overPattern: string,
+  asVar: string,
+  steps: Step[],
+  context: ExecutionContext,
+  options: LoopExecuteOptions,
+  requireMatches?: boolean,
+): Promise<LoopResult> {
+  const pattern = interpolate(overPattern, context);
+  const matches = await expandGlob(pattern);
+  const prefix = buildPrefix(context.nestingPath, stepId);
+  const startTime = Date.now();
+
+  emitForEachStart(context, prefix, pattern, matches);
 
   if (matches.length === 0) {
-    emitLoopStepEnd(context, prefix, startTime, 0, false, 'success');
-    return { outcome: 'success', lastIteration: -1 };
+    return handleEmptyMatches(
+      stepId,
+      pattern,
+      requireMatches,
+      context,
+      prefix,
+      startTime,
+    );
   }
 
   const startIteration = options.resumeFromIteration ?? 0;
@@ -177,6 +204,17 @@ async function executeForEachLoop(
     const iterResult = await executeIterationWithAudit(steps, iterCtx);
     iterationsCompleted++;
 
+    if (iterResult.aborted) {
+      emitLoopStepEnd(
+        context,
+        prefix,
+        startTime,
+        iterationsCompleted,
+        false,
+        'aborted',
+      );
+      return { outcome: 'aborted', lastIteration: i };
+    }
     if (iterResult.failed) {
       emitLoopStepEnd(
         context,
@@ -212,6 +250,25 @@ async function executeForEachLoop(
   return { outcome: 'success', lastIteration };
 }
 
+function handleEmptyMatches(
+  stepId: string,
+  pattern: string,
+  requireMatches: boolean | undefined,
+  context: ExecutionContext,
+  prefix: string,
+  startTime: number,
+): LoopResult {
+  if (requireMatches) {
+    console.error(
+      `baton: for-each loop "${stepId}" matched 0 files for pattern: ${pattern}`,
+    );
+    emitLoopStepEnd(context, prefix, startTime, 0, false, 'failed');
+    return { outcome: 'failed', lastIteration: -1 };
+  }
+  emitLoopStepEnd(context, prefix, startTime, 0, false, 'success');
+  return { outcome: 'success', lastIteration: -1 };
+}
+
 function emitLoopStepEnd(
   context: ExecutionContext,
   prefix: string,
@@ -236,6 +293,7 @@ function emitLoopStepEnd(
 interface IterationResult {
   breakTriggered: boolean;
   failed: boolean;
+  aborted: boolean;
 }
 
 async function executeIterationWithAudit(
@@ -277,7 +335,9 @@ async function executeIterationWithAudit(
 
   const result = await executeIterationBody(steps, iterCtx);
 
-  const outcome = result.failed ? 'failed' : 'success';
+  let outcome: 'success' | 'failed' | 'aborted' = 'success';
+  if (result.aborted) outcome = 'aborted';
+  else if (result.failed) outcome = 'failed';
 
   iterCtx.auditLogger?.emit({
     timestamp: new Date().toISOString(),
@@ -300,40 +360,64 @@ async function executeIterationBody(
   for (const childStep of steps) {
     const outcome = await dispatchChildStep(childStep, iterCtx);
 
+    if (outcome === 'aborted') {
+      return { breakTriggered: false, failed: false, aborted: true };
+    }
+
     if (evaluateBreakIf(childStep, outcome)) {
-      return { breakTriggered: true, failed: false };
+      return { breakTriggered: true, failed: false, aborted: false };
     }
 
     iterCtx.lastStepOutcome = outcome;
 
     if (outcome === 'failed' && !childStep.continue_on_failure) {
-      return { breakTriggered: false, failed: true };
+      return { breakTriggered: false, failed: true, aborted: false };
     }
   }
-  return { breakTriggered: false, failed: false };
+  return { breakTriggered: false, failed: false, aborted: false };
+}
+
+type ChildOutcome = 'success' | 'failed' | 'aborted';
+
+function isAgentStep(step: Step): boolean {
+  return !!(
+    step.prompt ||
+    step.mode === 'interactive' ||
+    step.mode === 'headless'
+  );
+}
+
+function mapLoopOutcome(outcome: LoopResult['outcome']): ChildOutcome {
+  if (outcome === 'success') return 'success';
+  if (outcome === 'aborted') return 'aborted';
+  return 'failed';
 }
 
 async function dispatchChildStep(
   step: Step,
   context: ExecutionContext,
-): Promise<'success' | 'failed'> {
-  if (step.steps && step.loop) {
+): Promise<ChildOutcome> {
+  if (step.loop && step.steps) {
     const result = await executeLoopStep(step, context);
-    if (result.outcome === 'exhausted') return 'failed';
-    return result.outcome === 'success' ? 'success' : 'failed';
+    return mapLoopOutcome(result.outcome);
   }
 
-  if (step.steps && !step.loop) {
+  if (step.steps) {
     return executeGroupStep(step.steps, context);
+  }
+
+  if (step.workflow) {
+    // biome-ignore lint/suspicious/noImportCycles: loops and sub-workflows are mutually recursive by design
+    const { executeSubWorkflowStep } = await import('./sub-workflow.ts');
+    return executeSubWorkflowStep(step, context);
   }
 
   if (step.command) {
     return executeShellStep(step, context);
   }
 
-  if (step.prompt || step.mode === 'interactive' || step.mode === 'headless') {
-    const outcome = await executeAgentStep(step, context);
-    return outcome === 'aborted' ? 'failed' : outcome;
+  if (isAgentStep(step)) {
+    return executeAgentStep(step, context);
   }
 
   return 'failed';
@@ -342,9 +426,10 @@ async function dispatchChildStep(
 async function executeGroupStep(
   steps: Step[],
   context: ExecutionContext,
-): Promise<'success' | 'failed'> {
+): Promise<ChildOutcome> {
   for (const childStep of steps) {
     const outcome = await dispatchChildStep(childStep, context);
+    if (outcome === 'aborted') return 'aborted';
     context.lastStepOutcome = outcome;
 
     if (outcome === 'failed' && !childStep.continue_on_failure) {

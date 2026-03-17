@@ -2,15 +2,15 @@ import { dirname, resolve } from 'node:path';
 import { buildPrefix } from '../audit.ts';
 import type { ExecutionContext, NestingSegment } from '../context.ts';
 import { createSubWorkflowContext } from '../context.ts';
+import { createEngine } from '../engine.ts';
 import { loadWorkflow } from '../loader.ts';
 import type { Step, Workflow } from '../schema.ts';
 import { shouldSkip } from '../shared/flow-control.ts';
 import { interpolate } from '../shared/interpolation.ts';
 import { executeAgentStep } from './agent.ts';
-import { executeLoopStep } from './loop.ts';
 import { executeShellStep } from './shell.ts';
 
-type StepOutcome = 'success' | 'failed';
+type StepOutcome = 'success' | 'failed' | 'aborted';
 
 /** Build a prefix string from a nesting path (without appending an extra step). */
 function buildNestingPrefix(nestingPath: NestingSegment[]): string {
@@ -28,12 +28,39 @@ function buildNestingPrefix(nestingPath: NestingSegment[]): string {
   return `[${tokens.join(', ')}]`;
 }
 
+/** Record child step progress on the parent context for state persistence. */
+function recordChildProgress(
+  childContext: ExecutionContext,
+  childStepId: string,
+): void {
+  const parentCtx = childContext.parentContext;
+  if (!parentCtx) return;
+
+  parentCtx.lastSubWorkflowChild = {
+    stepId: childStepId,
+    sessionIds: { ...childContext.sessionIds },
+    capturedVariables: { ...childContext.capturedVariables },
+    child: childContext.lastSubWorkflowChild ?? null,
+  };
+}
+
 /** Execute the child steps of a sub-workflow and return the outcome. */
 async function executeChildSteps(
   workflow: Workflow,
   childContext: ExecutionContext,
+  startFromStepId?: string,
 ): Promise<StepOutcome> {
+  let reached = !startFromStepId;
+
   for (const childStep of workflow.steps) {
+    if (!reached) {
+      if (childStep.id === startFromStepId) {
+        reached = true;
+      } else {
+        continue;
+      }
+    }
+
     if (shouldSkip(childStep, childContext)) {
       const prefix = buildPrefix(childContext.nestingPath, childStep.id);
       childContext.auditLogger?.emit({
@@ -61,6 +88,11 @@ async function executeChildSteps(
     }
 
     const stepOutcome = await dispatchSubWorkflowChild(childStep, childContext);
+    recordChildProgress(childContext, childStep.id);
+
+    if (stepOutcome === 'aborted') {
+      return 'aborted';
+    }
 
     childContext.lastStepOutcome = stepOutcome;
 
@@ -68,7 +100,59 @@ async function executeChildSteps(
       return 'failed';
     }
   }
+  if (startFromStepId && !reached) {
+    throw new Error(
+      `Resume step "${startFromStepId}" not found in sub-workflow`,
+    );
+  }
   return 'success';
+}
+
+/** Consume resume state from parent and apply to child context. */
+function applyResumeState(
+  parentContext: ExecutionContext,
+  childContext: ExecutionContext,
+): string | undefined {
+  const resumeChild = parentContext.resumeChildState;
+  parentContext.resumeChildState = undefined;
+  if (!resumeChild) return undefined;
+
+  Object.assign(childContext.sessionIds, resumeChild.sessionIds);
+  Object.assign(childContext.capturedVariables, resumeChild.capturedVariables);
+  if (resumeChild.child) {
+    childContext.resumeChildState = resumeChild.child;
+  }
+  return resumeChild.stepId;
+}
+
+/** Emit a step_end audit event for a sub-workflow step. */
+function emitStepEnd(
+  context: ExecutionContext,
+  prefix: string,
+  startTime: number,
+  outcome: string,
+  error?: string,
+): void {
+  const data: Record<string, unknown> = {
+    outcome,
+    duration_ms: Date.now() - startTime,
+  };
+  if (error) data.error = error;
+  context.auditLogger?.emit({
+    timestamp: new Date().toISOString(),
+    prefix,
+    type: 'step_end',
+    data,
+  });
+}
+
+/** Resolve engine for a sub-workflow: use its own config or null. */
+function resolveChildEngine(
+  workflow: Workflow,
+): import('../engine.ts').Engine | null {
+  return workflow.engine
+    ? createEngine(workflow.engine as Record<string, unknown>)
+    : null;
 }
 
 /**
@@ -108,17 +192,13 @@ export async function executeSubWorkflowStep(
     resolvedParams = resolveParams(step.params, parentContext);
     validateSubWorkflowParams(workflow, resolvedParams);
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    parentContext.auditLogger?.emit({
-      timestamp: new Date().toISOString(),
+    emitStepEnd(
+      parentContext,
       prefix,
-      type: 'step_end',
-      data: {
-        outcome: 'failed',
-        error,
-        duration_ms: Date.now() - startTime,
-      },
-    });
+      startTime,
+      'failed',
+      err instanceof Error ? err.message : String(err),
+    );
     throw err;
   }
 
@@ -127,9 +207,12 @@ export async function executeSubWorkflowStep(
     params: resolvedParams,
     workflowFile: workflowPath,
     subWorkflowName: workflow.name,
+    engine: resolveChildEngine(workflow),
   });
 
+  const startFromStepId = applyResumeState(parentContext, childContext);
   const childPrefix = buildNestingPrefix(childContext.nestingPath);
+
   let outcome: StepOutcome;
   try {
     outcome = await executeSubWorkflowBody(
@@ -137,32 +220,20 @@ export async function executeSubWorkflowStep(
       workflowPath,
       childContext,
       childPrefix,
+      startFromStepId,
     );
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    parentContext.auditLogger?.emit({
-      timestamp: new Date().toISOString(),
+    emitStepEnd(
+      parentContext,
       prefix,
-      type: 'step_end',
-      data: {
-        outcome: 'failed',
-        error,
-        duration_ms: Date.now() - startTime,
-      },
-    });
+      startTime,
+      'failed',
+      err instanceof Error ? err.message : String(err),
+    );
     throw err;
   }
 
-  parentContext.auditLogger?.emit({
-    timestamp: new Date().toISOString(),
-    prefix,
-    type: 'step_end',
-    data: {
-      outcome,
-      duration_ms: Date.now() - startTime,
-    },
-  });
-
+  emitStepEnd(parentContext, prefix, startTime, outcome);
   return outcome;
 }
 
@@ -172,6 +243,7 @@ async function executeSubWorkflowBody(
   workflowPath: string,
   childContext: ExecutionContext,
   childPrefix: string,
+  startFromStepId?: string,
 ): Promise<StepOutcome> {
   const subWorkflowStartTime = Date.now();
 
@@ -191,7 +263,11 @@ async function executeSubWorkflowBody(
 
   console.log(`  sub-workflow: ${workflow.name} (${workflowPath})`);
 
-  const outcome = await executeChildSteps(workflow, childContext);
+  const outcome = await executeChildSteps(
+    workflow,
+    childContext,
+    startFromStepId,
+  );
 
   childContext.auditLogger?.emit({
     timestamp: new Date().toISOString(),
@@ -260,9 +336,12 @@ async function dispatchSubWorkflowChild(
   }
 
   if (step.loop && step.steps) {
+    // biome-ignore lint/suspicious/noImportCycles: loops and sub-workflows are mutually recursive by design
+    const { executeLoopStep } = await import('./loop.ts');
     const result = await executeLoopStep(step, context);
-    if (result.outcome === 'exhausted') return 'failed';
-    return result.outcome === 'success' ? 'success' : 'failed';
+    if (result.outcome === 'aborted') return 'aborted';
+    if (result.outcome === 'success') return 'success';
+    return 'failed';
   }
 
   if (step.steps && !step.loop) {
@@ -270,8 +349,7 @@ async function dispatchSubWorkflowChild(
   }
 
   if (step.prompt || step.mode === 'interactive' || step.mode === 'headless') {
-    const outcome = await executeAgentStep(step, context);
-    return outcome === 'aborted' ? 'failed' : outcome;
+    return executeAgentStep(step, context);
   }
 
   throw new Error(`Unknown step type in sub-workflow step "${step.id}"`);
@@ -287,6 +365,9 @@ async function executeGroupInSubWorkflow(
     }
 
     const outcome = await dispatchSubWorkflowChild(childStep, context);
+    if (outcome === 'aborted') {
+      return 'aborted';
+    }
     context.lastStepOutcome = outcome;
     if (outcome === 'failed' && !childStep.continue_on_failure) {
       return 'failed';

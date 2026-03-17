@@ -10,7 +10,7 @@ import {
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runWorkflow } from '../src/runner.ts';
+import { WorkflowResult, runWorkflow } from '../src/runner.ts';
 import type { Workflow } from '../src/schema.ts';
 
 function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
@@ -377,7 +377,7 @@ describe('dispatcher: loop and sub-workflow stubs', () => {
       stateDir: testStateDir,
     });
 
-    expect(result).toBe(true);
+    expect(result).toBe(WorkflowResult.Success);
     expect(spawnSpy).toHaveBeenCalledTimes(1);
   });
 
