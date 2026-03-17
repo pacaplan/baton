@@ -17,7 +17,7 @@ steps:
 
   - id: proposal
     mode: interactive
-    session: new
+    session: resume
     prompt: |
       Help me write a change proposal.
       You MUST use the flokay:propose skill.

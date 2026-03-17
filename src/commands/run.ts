@@ -12,11 +12,15 @@ export function registerRunCommand(program: Command): void {
     .argument('<workflow>', 'Path to workflow YAML file')
     .argument('[params...]', 'Positional parameters for the workflow')
     .option('--from <step>', 'Start from a specific step')
+    .option(
+      '--session <id>',
+      'Resume an existing Claude session for the first step',
+    )
     .action(
       async (
         file: string,
         positional: string[],
-        options: { from?: string },
+        options: { from?: string; session?: string },
       ) => {
         const workflow = loadWorkflow(file);
         const params: Record<string, string> = {};
@@ -31,10 +35,15 @@ export function registerRunCommand(program: Command): void {
           engine = createEngine(workflow.engine as Record<string, unknown>);
         }
 
+        const sessionIds = options.session
+          ? { _seed: options.session }
+          : undefined;
+
         const result = await runWorkflow(workflow, params, {
           from: options.from,
           workflowFile: resolve(file),
           engine,
+          sessionIds,
         });
 
         if (result === WorkflowResult.Failed) {

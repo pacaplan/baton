@@ -79,9 +79,15 @@ export function createLoopIterationContext(
     loopVar: options.loopVar,
   };
 
+  // Propagate the _seed session so --session works through loops
+  const sessionIds: Record<string, string> = {};
+  if (parent.sessionIds._seed) {
+    sessionIds._seed = parent.sessionIds._seed;
+  }
+
   return {
     params: { ...parent.params, ...options.loopVar },
-    sessionIds: {},
+    sessionIds,
     capturedVariables: {},
     lastStepOutcome: null,
     nestingPath: [...parent.nestingPath, segment],
@@ -109,9 +115,15 @@ export function createSubWorkflowContext(
     subWorkflowName: options.subWorkflowName,
   };
 
+  // Propagate the _seed session so --session works through sub-workflows
+  const sessionIds: Record<string, string> = {};
+  if (parent.sessionIds._seed) {
+    sessionIds._seed = parent.sessionIds._seed;
+  }
+
   return {
     params: { ...options.params },
-    sessionIds: {},
+    sessionIds,
     capturedVariables: {},
     lastStepOutcome: null,
     nestingPath: [...parent.nestingPath, segment],
