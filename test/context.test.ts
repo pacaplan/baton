@@ -184,3 +184,95 @@ describe('createLoopIterationContext with auditLogger', () => {
     expect(child.auditLogger).toBe(mockLogger);
   });
 });
+
+describe('_seed session propagation', () => {
+  it('propagates _seed from parent to sub-workflow context', () => {
+    const parent = createRootContext({
+      params: {},
+      workflowFile: 'parent.yaml',
+      engine: null,
+      sessionIds: { _seed: 'external-session-123' },
+    });
+
+    const child = createSubWorkflowContext(parent, {
+      stepId: 'sub1',
+      params: {},
+      workflowFile: 'child.yaml',
+    });
+
+    expect(child.sessionIds).toEqual({ _seed: 'external-session-123' });
+  });
+
+  it('propagates _seed from parent to loop iteration context', () => {
+    const parent = createRootContext({
+      params: {},
+      workflowFile: 'test.yaml',
+      engine: null,
+      sessionIds: { _seed: 'external-session-123' },
+    });
+
+    const child = createLoopIterationContext(parent, {
+      stepId: 'loop1',
+      iteration: 0,
+    });
+
+    expect(child.sessionIds).toEqual({ _seed: 'external-session-123' });
+  });
+
+  it('does not propagate non-seed session IDs to sub-workflow', () => {
+    const parent = createRootContext({
+      params: {},
+      workflowFile: 'parent.yaml',
+      engine: null,
+      sessionIds: { 'step-1': 'sess-abc', _seed: 'seed-123' },
+    });
+
+    const child = createSubWorkflowContext(parent, {
+      stepId: 'sub1',
+      params: {},
+      workflowFile: 'child.yaml',
+    });
+
+    expect(child.sessionIds).toEqual({ _seed: 'seed-123' });
+  });
+
+  it('does not propagate when no seed exists', () => {
+    const parent = createRootContext({
+      params: {},
+      workflowFile: 'parent.yaml',
+      engine: null,
+      sessionIds: { 'step-1': 'sess-abc' },
+    });
+
+    const child = createSubWorkflowContext(parent, {
+      stepId: 'sub1',
+      params: {},
+      workflowFile: 'child.yaml',
+    });
+
+    expect(child.sessionIds).toEqual({});
+  });
+
+  it('propagates _seed through nested sub-workflows', () => {
+    const root = createRootContext({
+      params: {},
+      workflowFile: 'root.yaml',
+      engine: null,
+      sessionIds: { _seed: 'external-session-123' },
+    });
+
+    const mid = createSubWorkflowContext(root, {
+      stepId: 'sub1',
+      params: {},
+      workflowFile: 'mid.yaml',
+    });
+
+    const leaf = createSubWorkflowContext(mid, {
+      stepId: 'sub2',
+      params: {},
+      workflowFile: 'leaf.yaml',
+    });
+
+    expect(leaf.sessionIds).toEqual({ _seed: 'external-session-123' });
+  });
+});

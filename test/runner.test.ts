@@ -169,6 +169,39 @@ describe('runWorkflow', () => {
     expect(callArgs).toContain('Do the thing');
   });
 
+  it('uses seeded session ID for first step with session: resume', async () => {
+    const wf = makeWorkflow({
+      steps: [
+        { id: 'proposal', mode: 'headless', prompt: 'Write proposal', session: 'resume' },
+      ],
+    });
+    await runWorkflow(wf, {}, {
+      workflowFile: 'test.yaml',
+      stateDir: testStateDir,
+      sessionIds: { _seed: 'existing-session-abc' },
+    });
+
+    const callArgs = spawnSpy.mock.calls[0]?.[0] as string[];
+    expect(callArgs).toContain('--resume');
+    expect(callArgs).toContain('existing-session-abc');
+  });
+
+  it('ignores seeded session ID for steps with session: new', async () => {
+    const wf = makeWorkflow({
+      steps: [
+        { id: 'fresh', mode: 'headless', prompt: 'Start fresh', session: 'new' },
+      ],
+    });
+    await runWorkflow(wf, {}, {
+      workflowFile: 'test.yaml',
+      stateDir: testStateDir,
+      sessionIds: { _seed: 'existing-session-abc' },
+    });
+
+    const callArgs = spawnSpy.mock.calls[0]?.[0] as string[];
+    expect(callArgs).not.toContain('--resume');
+  });
+
   it('deletes state file after successful completion', async () => {
     const wf = makeWorkflow();
     await runWorkflow(wf, {}, { workflowFile: 'test.yaml', stateDir: testStateDir });
@@ -402,7 +435,7 @@ describe('runWorkflow with engine', () => {
     });
     await runWorkflow(wf, { x: 'y' }, { workflowFile: 'test.yaml', stateDir: testStateDir, engine });
 
-    expect(enrichPrompt).toHaveBeenCalledWith('my-step', { x: 'y' });
+    expect(enrichPrompt).toHaveBeenCalledWith('my-step', { x: 'y' }, { sessionStrategy: 'new' });
   });
 
   it('prompts user when validateStep fails and exits on q', async () => {

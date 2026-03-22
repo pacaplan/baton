@@ -44,6 +44,9 @@ baton run workflows/flokay.yaml my-change-name
 # Start from a specific step
 baton run workflows/flokay.yaml my-change-name --from design
 
+# Resume an existing Claude session into a new workflow
+baton run workflows/plan-change.yaml my-change --session <session-id>
+
 # Resume an interrupted workflow
 baton resume path/to/baton-state.json
 ```
@@ -77,7 +80,7 @@ baton (harness)
 Each agent step declares a session strategy:
 
 - **`session: new`** -- Fresh session, no prior context. Agent reads what it needs from disk.
-- **`session: resume`** -- Continues the most recent session within the current workflow.
+- **`session: resume`** -- Continues the most recent session within the current workflow. Also picks up a session seeded via `--session`.
 - **`session: inherit`** -- Crosses sub-workflow boundaries to resume the parent workflow's most recent session.
 
 ### State and resumption
@@ -164,10 +167,24 @@ Referenced in prompts and commands as `{{param_name}}`. Captured variables from 
 ## CLI reference
 
 ```
-baton run <workflow.yaml> [params...] [--from <step>]
+baton run <workflow.yaml> [params...] [--from <step>] [--session <id>]
 baton validate <workflow.yaml> [params...]
 baton resume <state-file-path>
 ```
+
+### --session
+
+Seeds the workflow with an existing Claude session ID. The first step that uses `session: resume` will continue that conversation instead of starting fresh. Steps using `session: new` are unaffected.
+
+This is useful when you've been discussing an idea with Claude and want to transition into a structured workflow -- Claude keeps the conversational context from your discussion.
+
+```bash
+# You've been chatting with Claude about a feature idea...
+# Now formalize it into a change, with Claude retaining the context:
+baton run workflows/plan-change.yaml my-feature --session abc-123-def
+```
+
+The seed propagates through sub-workflows and loop iterations, so it works regardless of nesting depth. If no step uses `session: resume`, the seeded session is ignored.
 
 ## Architecture
 

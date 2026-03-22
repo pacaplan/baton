@@ -159,7 +159,9 @@ function buildPrompt(
   let enrichment: string | undefined;
 
   if (context.engine?.enrichPrompt) {
-    const result = context.engine.enrichPrompt(step.id, context.params);
+    const result = context.engine.enrichPrompt(step.id, context.params, {
+      sessionStrategy: step.session,
+    });
     if (result) {
       enrichment = result;
       prompt = `${prompt}\n\n${enrichment}`;

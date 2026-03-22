@@ -408,7 +408,7 @@ async function handleOutcome(
 
 function emitSkippedStepEvents(step: Step, context: ExecutionContext): void {
   const prefix = buildPrefix(context.nestingPath, step.id);
-  const ctx = {
+  const data = {
     params: { ...context.params },
     capturedVariables: { ...context.capturedVariables },
   };
@@ -416,7 +416,7 @@ function emitSkippedStepEvents(step: Step, context: ExecutionContext): void {
     timestamp: new Date().toISOString(),
     prefix,
     type: 'step_start',
-    data: { context: ctx },
+    data: { context: data },
   });
   context.auditLogger?.emit({
     timestamp: new Date().toISOString(),
@@ -449,7 +449,11 @@ async function dispatchStep(
   printSeparator();
   printStepHeading(index, workflow.steps.length, breadcrumb, stepType, false);
 
+  const flush = () =>
+    writeStepState(step, context, workflow, workflowHash, stateDir);
+  context.flushState = flush;
   const result = await executeByType(step, stepType, context);
+  context.flushState = undefined;
   writeStepState(
     step,
     context,
@@ -486,15 +490,11 @@ async function executeGroupStepInRunner(
 ): Promise<StepOutcome> {
   if (!step.steps) return 'failed';
   for (const child of step.steps) {
-    const childType = getStepType(child);
-    const result = await executeByType(child, childType, context);
-    if (result.outcome === 'aborted') {
-      return 'aborted';
-    }
+    const result = await executeByType(child, getStepType(child), context);
+    if (result.outcome === 'aborted') return 'aborted';
     context.lastStepOutcome = result.outcome;
-    if (result.outcome === 'failed' && !child.continue_on_failure) {
+    if (result.outcome === 'failed' && !child.continue_on_failure)
       return 'failed';
-    }
   }
   return 'success';
 }
